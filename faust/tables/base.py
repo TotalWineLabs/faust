@@ -364,15 +364,14 @@ class Collection(Service, CollectionT):
                 keys_to_remove = self._partition_timestamp_keys.pop(
                     (partition, timestamp), None)
                 if keys_to_remove:
-                    for key in keys_to_remove:
+                    for key in keys_to_remove:                        
+                        if key[1][0] > self.last_closed_window:
+                            self.on_window_close(key, value)
                         value = self.data.pop(key, None)
-                        self.on_window_close(key, value)
-                    #     if key[1][0] > self.last_closed_window:
-                    #         self.on_window_close(key, value)
-                    # self.last_closed_window = max(
-                    #     self.last_closed_window,
-                    #     max(key[1][0] for key in keys_to_remove),
-                    # )
+                    self.last_closed_window = max(
+                        self.last_closed_window,
+                        max(key[1][0] for key in keys_to_remove)
+                        )
 
     def on_window_close(self, key: Any, value: Any) -> None:
         if self._on_window_close:
