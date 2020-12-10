@@ -364,15 +364,18 @@ class Collection(Service, CollectionT):
                 timestamp = heappop(timestamps)
                 keys_to_remove = self._partition_timestamp_keys.pop(
                     (partition, timestamp), None)
+                print("FROM FAUST: keys_to_remove=" + str(keys_to_remove) )
                 if keys_to_remove:
                     for key in keys_to_remove:                        
                         if key[1][0] > self.last_closed_window:
+                            print("FROM FAUST: Window Close for Key =" + str(key) )
                             self.on_window_close(key, value)
                         value = self.data.pop(key, None)
                     self.last_closed_window = max(
                         self.last_closed_window,
                         max(key[1][0] for key in keys_to_remove)
                         )
+                    print("FROM FAUST: Last Window Close set to =" + str(self.last_closed_window) )
 
     def on_window_close(self, key: Any, value: Any) -> None:
         if self._on_window_close:
