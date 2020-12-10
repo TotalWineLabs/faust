@@ -357,6 +357,7 @@ class Collection(Service, CollectionT):
         window = cast(WindowT, self.window)
         assert window
         for partition, timestamps in self._partition_timestamps.items():
+            print("FROM FAUST: ;partition=" + str(partition) + ' ;timestamps=' + str(timestamps) )
             while timestamps and window.stale(
                     timestamps[0],
                     self._partition_latest_timestamp[partition]):
