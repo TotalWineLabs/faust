@@ -1,2 +1,0 @@
-aioeventlet~=0.5.1
-dnspython
