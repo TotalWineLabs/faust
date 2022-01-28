@@ -1,0 +1,45 @@
+steps:
+
+- name: python
+  id: install-requirements
+  entrypoint: /bin/bash
+  args:
+  - '-c'
+  - |    
+    python -m pip install -r requirements/dist.txt --user
+
+- name: python
+  id: build
+  waitFor:
+    - install-requirements
+  entrypoint: /bin/bash
+  args:
+  - '-c'
+  - |
+    python3 -m pip install --upgrade build && python3 -m build
+
+- name: python
+  id: list package contents
+  waitFor:
+    - build
+  entrypoint: /bin/bash
+  args:
+  - '-c'
+  - |
+    ls -ltr dist    
+
+- name: python
+  id: upload-package
+  waitFor:
+    - list details  
+  entrypoint: /bin/bash
+  args:
+  - '-c'
+  - |    
+    python3 -m pip install twine --user
+    python3 -m pip install keyrings.google-artifactregistry-auth --user
+    python3 -m twine upload --repository-url https://${_LOCATION}-python.pkg.dev/$PROJECT_ID/${_REPOSITORY} dist/* --verbose
+
+substitutions:
+  _LOCATION: 'us-east1'
+  _REPOSITORY: totalwine
