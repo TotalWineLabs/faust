@@ -1,21 +1,7 @@
 steps:
 
 - name: python
-  id: install crs-int aiokafka
-  entrypoint: /bin/bash
-  args:
-  - -c
-  - |
-    python3 -m pip install twine --user
-    python3 -m pip install keyrings.google-artifactregistry-auth --user  
-    echo "------------ Installing Integrations AioKafka package ------------------"  
-    pip install --extra-index-url https://us-east1-python.pkg.dev/$PROJECT_ID/totalwine/simple/ aiokafka==0.6.0.dev0
-    echo "------------ Completed installing Integrations AioKafka package ------------------"  
-
-- name: python
   id: install-requirements
-  waitFor:
-    - install crs-int aiokafka
   entrypoint: /bin/bash
   args:
   - '-c'
