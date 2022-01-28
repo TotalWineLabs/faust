@@ -35,7 +35,9 @@ steps:
   entrypoint: /bin/bash
   args:
   - '-c'
-  - |    
+  - |
+    python3 -m pip install twine --user
+    python3 -m pip install keyrings.google-artifactregistry-auth --user  
     python3 -m twine upload --repository-url https://${_LOCATION}-python.pkg.dev/$PROJECT_ID/${_REPOSITORY} dist/* --verbose
 
 substitutions:
