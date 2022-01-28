@@ -31,7 +31,7 @@ steps:
 - name: python
   id: upload-package
   waitFor:
-    - list details  
+    - list package contents
   entrypoint: /bin/bash
   args:
   - '-c'
