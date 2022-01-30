@@ -50,8 +50,7 @@ class test_Monitor:
     def create_monitor(self, **kwargs: Any) -> Monitor:
         return Monitor(**kwargs)
 
-    def create_populated_monitor(
-            self,
+    def create_populated_monitor(self,
             messages_active=101,
             messages_received_total=1001,
             messages_sent=303,
@@ -208,11 +207,11 @@ class test_Monitor:
         # should not be an error
         mon.on_stream_event_out(TP1, 3, stream, event, None)
 
-    def test_on_topic_buffer_full(self, *, mon):
+    def test_on_topic_buffer_full(self, *, mon, topic):
         for i in range(1, 11):
-            mon.on_topic_buffer_full(TP1)
+            mon.on_topic_buffer_full(topic)
 
-            assert mon.topic_buffer_full[TP1] == i
+            assert mon.topic_buffer_full[topic] == i
 
     def test_on_message_out(self, *, message, mon, time):
         mon.messages_active = 10

@@ -24,7 +24,6 @@ from typing import (
     no_type_check,
 )
 
-from mode.utils.futures import maybe_async
 from mode import Seconds, Service
 from yarl import URL
 
@@ -352,9 +351,9 @@ class Collection(Service, CollectionT):
             await self.sleep(interval)
             async for sleep_time in self.itertimer(
                     interval, name='table_cleanup'):
-                await self._del_old_keys()
+                self._del_old_keys()
 
-    async def _del_old_keys(self) -> None:
+    def _del_old_keys(self) -> None:
         window = cast(WindowT, self.window)
         assert window
         for partition, timestamps in self._partition_timestamps.items():
@@ -368,15 +367,15 @@ class Collection(Service, CollectionT):
                     for key in keys_to_remove:
                         value = self.data.pop(key, None)
                         if key[1][0] > self.last_closed_window:
-                            await self.on_window_close(key, value)
+                            self.on_window_close(key, value)
                     self.last_closed_window = max(
                         self.last_closed_window,
                         max(key[1][0] for key in keys_to_remove),
                     )
 
-    async def on_window_close(self, key: Any, value: Any) -> None:
+    def on_window_close(self, key: Any, value: Any) -> None:
         if self._on_window_close:
-            await maybe_async(self._on_window_close(key, value))
+            self._on_window_close(key, value)
 
     def _should_expire_keys(self) -> bool:
         window = self.window

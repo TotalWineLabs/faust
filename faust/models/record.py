@@ -264,7 +264,6 @@ class Record(Model, abstract=True):  # type: ignore
                     default=default,
                     parent=parent,
                     coerce=coerce,
-                    model_coercions=options.coercions,
                     date_parser=date_parser,
                     tag=tag,
                 )
@@ -277,7 +276,6 @@ class Record(Model, abstract=True):  # type: ignore
                     default=default,
                     parent=parent,
                     coerce=coerce,
-                    model_coercions=options.coercions,
                 )
 
             descr.on_model_attached()

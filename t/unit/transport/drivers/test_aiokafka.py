@@ -737,7 +737,6 @@ class test_AIOKafkaConsumerThread(AIOKafkaConsumerThreadFixtures):
                 api_version=app.conf.consumer_api_version,
                 client_id=conf.broker_client_id,
                 group_id=conf.id,
-                group_instance_id=conf.consumer_group_instance_id,
                 bootstrap_servers=server_list(
                     transport.url, transport.default_port),
                 partition_assignment_strategy=[cthread._assignor],
@@ -1302,7 +1301,7 @@ class test_Producer:
         pytest.param({'api_version': '0.10'},
                      marks=pytest.mark.conf(
                          producer_api_version='0.10')),
-        pytest.param({'acks': -1},
+        pytest.param({'acks': 'all'},
                      marks=pytest.mark.conf(
                          producer_acks='all')),
         pytest.param({'bootstrap_servers': ['a:9092', 'b:9092']},
@@ -1316,7 +1315,7 @@ class test_Producer:
                          producer_compression_type='snappy')),
         pytest.param({'linger_ms': 9345},
                      marks=pytest.mark.conf(
-                         producer_linger=9.345)),
+                         producer_linger_ms=9345)),
         pytest.param({'max_batch_size': 41223},
                      marks=pytest.mark.conf(
                          producer_max_batch_size=41223)),

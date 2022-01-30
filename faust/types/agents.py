@@ -291,7 +291,7 @@ class AgentManagerT(ServiceT, ManagedUserDict[str, AgentT]):
         ...
 
     @abc.abstractmethod
-    def actor_tracebacks(self) -> Mapping[str, List[str]]:
+    def tracebacks(self) -> Mapping[str, List[str]]:
         ...
 
     @abc.abstractmethod

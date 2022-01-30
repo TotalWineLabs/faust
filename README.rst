@@ -47,7 +47,7 @@ Here's an example processing a stream of incoming orders:
     app = faust.App('myapp', broker='kafka://localhost')
 
     # Models describe how messages are serialized:
-    # {"account_id": "3fae-...", amount": 3}
+    # {"account_id": "3fae-...", "amount": 3}
     class Order(faust.Record):
         account_id: str
         amount: int
@@ -151,14 +151,12 @@ resource for learning the implementation of `Kafka Streams`_.
 .. _`Robinhood`: http://robinhood.com
 .. _`async/await`:
     https://medium.freecodecamp.org/a-guide-to-asynchronous-programming-in-python-with-asyncio-232e2afa44f6
-.. _`Celery`: http://celeryproject.org
 .. _`Kafka Streams`: https://kafka.apache.org/documentation/streams
 .. _`Apache Spark`: http://spark.apache.org
 .. _`Storm`: http://storm.apache.org
 .. _`Samza`: http://samza.apache.org
 .. _`Flink`: http://flink.apache.org
 .. _`RocksDB`: http://rocksdb.org
-.. _`Apache Kafka`: https://kafka.apache.org
 
 .. _`introduction`: http://faust.readthedocs.io/en/latest/introduction.html
 
@@ -231,12 +229,6 @@ Faust is...
     and it works with your favorite Python libraries like Django, Flask,
     SQLAlchemy, NTLK, NumPy, SciPy, TensorFlow, etc.
 
-.. _`introduction`: http://faust.readthedocs.io/en/latest/introduction.html
-
-.. _`quickstart`: http://faust.readthedocs.io/en/latest/playbooks/quickstart.html
-
-.. _`User Guide`: http://faust.readthedocs.io/en/latest/userguide/index.html
-
 Installation
 ============
 
@@ -248,8 +240,6 @@ To install using `pip`:
 .. sourcecode:: console
 
     $ pip install -U faust
-
-.. _bundles:
 
 Bundles
 -------
@@ -276,8 +266,6 @@ Stores
 
     **Recommended in production.**
 
-
-.. _`RocksDB`: http://rocksdb.org
 
 Caching
 ~~~~~~~
@@ -357,12 +345,6 @@ You can install the latest snapshot of Faust using the following
 
     $ pip install https://github.com/robinhood/faust/zipball/master#egg=faust
 
-.. _`introduction`: http://faust.readthedocs.io/en/latest/introduction.html
-
-.. _`quickstart`: http://faust.readthedocs.io/en/latest/playbooks/quickstart.html
-
-.. _`User Guide`: http://faust.readthedocs.io/en/latest/userguide/index.html
-
 FAQ
 ===
 
@@ -416,11 +398,13 @@ Can I use Faust with Twisted?
 Yes! Use the ``asyncio`` reactor implementation:
 https://twistedmatrix.com/documents/17.1.0/api/twisted.internet.asyncioreactor.html
 
+
 Will you support Python 2.7 or Python 3.5?
 ------------------------------------------
 
 No. Faust requires Python 3.6 or later, since it heavily uses features that were
 introduced in Python 3.6 (`async`, `await`, variable type annotations).
+
 
 I get a maximum number of open files exceeded error by RocksDB when running a Faust app locally. How can I fix this?
 --------------------------------------------------------------------------------------------------------------------
@@ -435,24 +419,14 @@ What kafka versions faust supports?
 
 Faust supports kafka with version >= 0.10.
 
-.. _`introduction`: http://faust.readthedocs.io/en/latest/introduction.html
-
-.. _`quickstart`: http://faust.readthedocs.io/en/latest/playbooks/quickstart.html
-
-.. _`User Guide`: http://faust.readthedocs.io/en/latest/userguide/index.html
-
-.. _getting-help:
-
 Getting Help
 ============
-
-.. _slack-channel:
 
 Slack
 -----
 
 For discussions about the usage, development, and future of Faust,
-please join the `fauststream`_ Slack.
+please join the fauststream Slack.
 
 * https://fauststream.slack.com
 * Sign-up: https://join.slack.com/t/fauststream/shared_invite/enQtNDEzMTIyMTUyNzU2LTIyMjNjY2M2YzA2OWFhMDlmMzVkODk3YTBlYThlYmZiNTUwZDJlYWZiZTdkN2Q4ZGU4NWM4YWMyNTM5MGQ5OTg
@@ -460,15 +434,11 @@ please join the `fauststream`_ Slack.
 Resources
 =========
 
-.. _bug-tracker:
-
 Bug tracker
 -----------
 
 If you have any suggestions, bug reports, or annoyances please report them
 to our issue tracker at https://github.com/robinhood/faust/issues/
-
-.. _license:
 
 License
 =======
@@ -477,12 +447,6 @@ This software is licensed under the `New BSD License`. See the ``LICENSE``
 file in the top distribution directory for the full license text.
 
 .. # vim: syntax=rst expandtab tabstop=4 shiftwidth=4 shiftround
-
-.. _`introduction`: http://faust.readthedocs.io/en/latest/introduction.html
-
-.. _`quickstart`: http://faust.readthedocs.io/en/latest/playbooks/quickstart.html
-
-.. _`User Guide`: http://faust.readthedocs.io/en/latest/userguide/index.html
 
 Contributing
 ============
@@ -542,12 +506,6 @@ reported by opening an issue or contacting one or more of the project maintainer
 This Code of Conduct is adapted from the Contributor Covenant,
 version 1.2.0 available at http://contributor-covenant.org/version/1/2/0/.
 
-.. _`introduction`: http://faust.readthedocs.io/en/latest/introduction.html
-
-.. _`quickstart`: http://faust.readthedocs.io/en/latest/playbooks/quickstart.html
-
-.. _`User Guide`: http://faust.readthedocs.io/en/latest/userguide/index.html
-
 .. |build-status| image:: https://secure.travis-ci.org/robinhood/faust.png?branch=master
     :alt: Build status
     :target: https://travis-ci.org/robinhood/faust
@@ -570,10 +528,3 @@ version 1.2.0 available at http://contributor-covenant.org/version/1/2/0/.
 .. |pyimp| image:: https://img.shields.io/pypi/implementation/faust.svg
     :alt: Support Python implementations.
     :target: http://pypi.org/project/faust/
-
-.. _`introduction`: http://faust.readthedocs.io/en/latest/introduction.html
-
-.. _`quickstart`: http://faust.readthedocs.io/en/latest/playbooks/quickstart.html
-
-.. _`User Guide`: http://faust.readthedocs.io/en/latest/userguide/index.html
-

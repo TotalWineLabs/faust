@@ -1,6 +1,5 @@
 """Monitor - sensor tracking metrics."""
 import asyncio
-import re
 
 from collections import deque
 from http import HTTPStatus
@@ -13,7 +12,6 @@ from typing import (
     Mapping,
     MutableMapping,
     Optional,
-    Pattern,
     Tuple,
     cast,
 )
@@ -23,7 +21,7 @@ from mode.utils.objects import KeywordReduce
 from mode.utils.typing import Counter, Deque
 
 from faust import web
-from faust.types import AppT, CollectionT, EventT, StreamT
+from faust.types import AppT, CollectionT, EventT, StreamT, TopicT
 from faust.types.assignor import PartitionAssignorT
 from faust.types.tuples import Message, PendingMessage, RecordMetadata, TP
 from faust.types.transports import ConsumerT, ProducerT
@@ -41,9 +39,6 @@ MAX_ASSIGNMENT_LATENCY_HISTORY = 30
 TPOffsetMapping = MutableMapping[TP, int]
 PartitionOffsetMapping = MutableMapping[int, int]
 TPOffsetDict = MutableMapping[str, PartitionOffsetMapping]
-
-RE_NORMALIZE = re.compile(r'[\<\>:\s]+')
-RE_NORMALIZE_SUBSTITUTION = '_'
 
 
 class TableState(KeywordReduce):
@@ -158,7 +153,7 @@ class Monitor(Sensor, KeywordReduce):
     assignment_latency: Deque[float] = cast(Deque[float], None)
 
     #: Counter of times a topics buffer was full
-    topic_buffer_full: Counter[TP] = cast(Counter[TP], None)
+    topic_buffer_full: Counter[TopicT] = cast(Counter[TopicT], None)
 
     #: Arbitrary counts added by apps
     metric_counts: Counter[str] = cast(Counter[str], None)
@@ -229,7 +224,7 @@ class Monitor(Sensor, KeywordReduce):
                  events_s: int = 0,
                  messages_s: int = 0,
                  events_runtime_avg: float = 0.0,
-                 topic_buffer_full: Counter[TP] = None,
+                 topic_buffer_full: Counter[TopicT] = None,
                  rebalances: int = None,
                  rebalance_return_latency: Deque[float] = None,
                  rebalance_end_latency: Deque[float] = None,
@@ -439,7 +434,6 @@ class Monitor(Sensor, KeywordReduce):
                            event: EventT) -> Optional[Dict]:
         """Call when stream starts processing an event."""
         self.events_total += 1
-        self.stream_inbound_time[tp] = monotonic()
         self.events_by_stream[str(stream)] += 1
         self.events_by_task[str(stream.task_owner)] += 1
         self.events_active += 1
@@ -464,9 +458,9 @@ class Monitor(Sensor, KeywordReduce):
             deque_pushpopmax(
                 self.events_runtime, time_total, self.max_avg_history)
 
-    def on_topic_buffer_full(self, tp: TP) -> None:
+    def on_topic_buffer_full(self, topic: TopicT) -> None:
         """Call when conductor topic buffer is full and has to wait."""
-        self.topic_buffer_full[tp] += 1
+        self.topic_buffer_full[topic] += 1
 
     def on_message_out(self,
                        tp: TP,
@@ -617,8 +611,7 @@ class Monitor(Sensor, KeywordReduce):
                            *,
                            view: web.View = None) -> None:
         """Web server finished working on request."""
-        status_code = HTTPStatus(
-            response.status if response is not None else 500)
+        status_code = HTTPStatus(response.status if response else 500)
         time_start = state['time_start']
         time_end = self.time()
         latency_end = time_end - time_start
@@ -630,9 +623,3 @@ class Monitor(Sensor, KeywordReduce):
         deque_pushpopmax(
             self.http_response_latency, latency_end, self.max_avg_history)
         self.http_response_codes[status_code] += 1
-
-    def _normalize(self, name: str,
-                   *,
-                   pattern: Pattern = RE_NORMALIZE,
-                   substitution: str = RE_NORMALIZE_SUBSTITUTION) -> str:
-        return pattern.sub(substitution, name)

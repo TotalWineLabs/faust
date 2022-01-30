@@ -302,10 +302,8 @@ class Agent(AgentT, Service):
     def _get_supervisor_strategy(self) -> Type[SupervisorStrategyT]:
         SupervisorStrategy = self.supervisor_strategy
         if SupervisorStrategy is None:
-            return cast(Type[SupervisorStrategyT],
-                        self.app.conf.agent_supervisor)
-        else:
-            return SupervisorStrategy
+            SupervisorStrategy = self.app.conf.agent_supervisor
+        return SupervisorStrategy
 
     async def _on_start_supervisor(self) -> None:
         active_partitions = self._get_active_partitions()

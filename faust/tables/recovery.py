@@ -653,13 +653,11 @@ class Recovery(Service):
                 destination[tp] = last_value
             else:
                 destination[tp] = max(last_value, new_value)
-
-        if destination:
-            self.log.info(
-                '%s offsets at start of reading:\n%s',
-                title,
-                self._start_offsets_logtable(destination, title=title),
-            )
+        self.log.info(
+            '%s offsets at start of reading:\n%s',
+            title,
+            self._start_offsets_logtable(destination, title=title),
+        )
 
     def _start_offsets_logtable(self, offsets: Mapping[TP, int], *,
                                 title: str) -> str:

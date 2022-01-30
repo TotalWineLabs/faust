@@ -1,7 +1,7 @@
 """Monitor using datadog."""
 import re
 
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Pattern, cast
 
 from mode.utils.objects import cached_property
 
@@ -25,10 +25,19 @@ try:
     import datadog
     from datadog.dogstatsd import DogStatsd
 except ImportError:  # pragma: no cover
-    datadog = None  # type: ignore
+    datadog = None
     class DogStatsD: ...  # noqa
 
 __all__ = ['DatadogMonitor']
+
+# This regular expression is used to generate stream ids in Statsd.
+# It converts for example
+#    'Stream: <Topic: withdrawals>'
+# -> 'Stream_Topic_withdrawals'
+#
+# See StatsdMonitor._normalize()
+RE_NORMALIZE = re.compile(r'[\<\>:\s]+')
+RE_NORMALIZE_SUBSTITUTION = '_'
 
 
 class DatadogStatsClient:
@@ -76,7 +85,7 @@ class DatadogStatsClient:
                   metric: str,
                   value: float = 1.0,
                   labels: Dict = None) -> float:
-        return self.client.decrement(  # type: ignore
+        return self.client.decrement(
             metric,
             value=value,
             tags=self._encode_labels(labels),
@@ -88,7 +97,7 @@ class DatadogStatsClient:
         self.decrement(metric, value=count)
 
     def timing(self, metric: str, value: float, labels: Dict = None) -> None:
-        self.client.timing(  # type: ignore
+        self.client.timing(
             metric,
             value=value,
             tags=self._encode_labels(labels),
@@ -99,7 +108,7 @@ class DatadogStatsClient:
               metric: str = None,
               labels: Dict = None,
               use_ms: bool = None) -> float:
-        return self.client.timed(  # type: ignore
+        return self.client.timed(
             metric=metric,
             tags=self._encode_labels(labels),
             sample_rate=self.rate,
@@ -108,7 +117,7 @@ class DatadogStatsClient:
 
     def histogram(self, metric: str, value: float,
                   labels: Dict = None) -> None:
-        self.client.histogram(  # type: ignore
+        self.client.histogram(
             metric,
             value=value,
             tags=self._encode_labels(labels),
@@ -339,6 +348,12 @@ class DatadogMonitor(Monitor):
         self.client.timing(
             'http_response_latency',
             self.ms_since(state['time_end']))
+
+    def _normalize(self, name: str,
+                   *,
+                   pattern: Pattern = RE_NORMALIZE,
+                   substitution: str = RE_NORMALIZE_SUBSTITUTION) -> str:
+        return pattern.sub(substitution, name)
 
     def _format_label(self, tp: Optional[TP] = None,
                       stream: Optional[StreamT] = None,

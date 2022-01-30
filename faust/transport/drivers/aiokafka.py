@@ -86,6 +86,7 @@ from faust.utils.tracing import (
 )
 
 __all__ = ['Consumer', 'Producer', 'Transport']
+
 if not hasattr(aiokafka, '__robinhood__'):  # pragma: no cover
     raise RuntimeError(
         'Please install robinhood-aiokafka, not aiokafka')
@@ -344,7 +345,6 @@ class AIOKafkaConsumerThread(ConsumerThread):
             api_version=conf.consumer_api_version,
             client_id=conf.broker_client_id,
             group_id=conf.id,
-            group_instance_id=conf.consumer_group_instance_id,
             bootstrap_servers=server_list(
                 transport.url, transport.default_port),
             partition_assignment_strategy=[self._assignor],
@@ -427,7 +427,6 @@ class AIOKafkaConsumerThread(ConsumerThread):
             pass
         else:
             cls = span.__class__
-
             class LazySpan(cls):
 
                 def finish() -> None:
@@ -539,7 +538,7 @@ class AIOKafkaConsumerThread(ConsumerThread):
         except CommitFailedError as exc:
             if 'already rebalanced' in str(exc):
                 return False
-            self.log.exception('Committing raised exception: %r', exc)
+            self.log.exception(f'Committing raised exception: %r', exc)
             await self.crash(exc)
             return False
         except IllegalStateError as exc:
@@ -742,8 +741,6 @@ class AIOKafkaConsumerThread(ConsumerThread):
             consumer.seek(tp, offset)
             if offset > 0:
                 self.consumer._read_offset[tp] = offset
-            elif tp in self.consumer._read_offset.keys():
-                del self.consumer._read_offset[tp]
         await asyncio.gather(*[
             consumer.position(tp) for tp in partitions
         ])
@@ -1184,11 +1181,11 @@ class Transport(base.Transport):
                 timeout=timeout,
             )
             if wait_result.stopped:
-                owner.log.info('Shutting down - skipping creation.')
+                owner.log.info(f'Shutting down - skipping creation.')
                 return None
             response = wait_result.result
             return response.controller_id
-        raise Exception('Controller node not found')
+        raise Exception(f'Controller node not found')
 
     async def _really_create_topic(
             self,
@@ -1236,7 +1233,7 @@ class Transport(base.Transport):
             timeout=timeout,
         )
         if wait_result.stopped:
-            owner.log.debug('Shutting down - skipping creation.')
+            owner.log.debug(f'Shutting down - skipping creation.')
             return
         response = wait_result.result
 

@@ -180,68 +180,11 @@ class test_Collection:
             table.data, fut.result().topic_partition, fut.result().offset,
         )
 
-    @pytest.mark.asyncio
-    async def test_del_old_keys__empty(self, *, table):
+    def test_del_old_keys__empty(self, *, table):
         table.window = Mock(name='window')
-        await table._del_old_keys()
+        table._del_old_keys()
 
-    @pytest.mark.asyncio
-    async def test_del_old_keys(self, *, table):
-        on_window_close = table._on_window_close = AsyncMock(
-            name='on_window_close')
-
-        table.window = Mock(name='window')
-        table._data = {
-            ('boo', (1.1, 1.4)): 'BOO',
-            ('moo', (1.4, 1.6)): 'MOO',
-            ('faa', (1.9, 2.0)): 'FAA',
-            ('bar', (4.1, 4.2)): 'BAR',
-        }
-        table._partition_timestamps = {
-            TP1: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
-        }
-        table._partition_timestamp_keys = {
-            (TP1, 2.0): [
-                ('boo', (1.1, 1.4)),
-                ('moo', (1.4, 1.6)),
-                ('faa', (1.9, 2.0)),
-            ],
-            (TP1, 5.0): [
-                ('bar', (4.1, 4.2)),
-            ],
-        }
-
-        def get_stale(limit):
-            def is_stale(timestamp, latest_timestamp):
-                return timestamp < limit
-            return is_stale
-
-        table.window.stale.side_effect = get_stale(4.0)
-
-        await table._del_old_keys()
-
-        assert table._partition_timestamps[TP1] == [
-            4.0, 5.0, 6.0, 7.0]
-        assert table.data == {('bar', (4.1, 4.2)): 'BAR'}
-
-        on_window_close.assert_has_calls([
-            call(('boo', (1.1, 1.4)), 'BOO'),
-            call.coro(('boo', (1.1, 1.4)), 'BOO'),
-            call(('moo', (1.4, 1.6)), 'MOO'),
-            call.coro(('moo', (1.4, 1.6)), 'MOO'),
-            call(('faa', (1.9, 2.0)), 'FAA'),
-            call.coro(('faa', (1.9, 2.0)), 'FAA'),
-        ])
-
-        table.last_closed_window = 8.0
-        table.window.stale.side_effect = get_stale(6.0)
-
-        await table._del_old_keys()
-
-        assert not table.data
-
-    @pytest.mark.asyncio
-    async def test_del_old_keys_non_async_cb(self, *, table):
+    def test_del_old_keys(self, *, table):
         on_window_close = table._on_window_close = Mock(name='on_window_close')
 
         table.window = Mock(name='window')
@@ -272,7 +215,7 @@ class test_Collection:
 
         table.window.stale.side_effect = get_stale(4.0)
 
-        await table._del_old_keys()
+        table._del_old_keys()
 
         assert table._partition_timestamps[TP1] == [
             4.0, 5.0, 6.0, 7.0]
@@ -287,14 +230,13 @@ class test_Collection:
         table.last_closed_window = 8.0
         table.window.stale.side_effect = get_stale(6.0)
 
-        await table._del_old_keys()
+        table._del_old_keys()
 
         assert not table.data
 
-    @pytest.mark.asyncio
-    async def test_on_window_close__default(self, *, table):
+    def test_on_window_close__default(self, *, table):
         assert table._on_window_close is None
-        await table.on_window_close(('boo', (1.1, 1.4)), 'BOO')
+        table.on_window_close(('boo', (1.1, 1.4)), 'BOO')
 
     @pytest.mark.parametrize('source_n,change_n,expect_error', [
         (3, 3, False),
@@ -324,7 +266,7 @@ class test_Collection:
         await table._clean_data(table)
 
         table._should_expire_keys.return_value = True
-        table._del_old_keys = AsyncMock(name='_del_old_keys')
+        table._del_old_keys = Mock(name='_del_old_keys')
 
         def on_sleep(secs, **kwargs):
             if table.sleep.call_count > 2:

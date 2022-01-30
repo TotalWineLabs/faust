@@ -47,15 +47,6 @@ Agents
     faust.agents.models
     faust.agents.replies
 
-Contrib
-=======
-
-.. toctree::
-    :maxdepth: 1
-
-    faust.contrib
-    faust.contrib.sentry
-
 Fixups
 ======
 
@@ -105,7 +96,6 @@ Sensors
     faust.sensors.base
     faust.sensors.datadog
     faust.sensors.monitor
-    faust.sensors.prometheus
     faust.sensors.statsd
 
 Serializers
@@ -194,10 +184,6 @@ Types
     faust.types.sensors
     faust.types.serializers
     faust.types.settings
-    faust.types.settings.base
-    faust.types.settings.params
-    faust.types.settings.sections
-    faust.types.settings.settings
     faust.types.stores
     faust.types.streams
     faust.types.tables

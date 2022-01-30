@@ -4,6 +4,7 @@ from typing import Any, Sequence
 from yarl import URL
 
 __all__ = [
+    'BLOCKING_TIMEOUT',
     'CONSOLE_PORT',
     'DATADIR',
     'DEBUG',
