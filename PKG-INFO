@@ -1,6 +1,6 @@
 Metadata-Version: 2.1
 Name: faust
-Version: 1.10.4
+Version: 1.11.0
 Summary: Python Stream processing.
 Home-page: http://faust.readthedocs.io/
 Author: Robinhood Markets, Inc.
@@ -19,7 +19,7 @@ Description: .. XXX Need to change this image to readthedocs before release
         
         |build-status| |coverage| |license| |wheel| |pyversion| |pyimp|
         
-        :Version: 1.10.4
+        :Version: 1.11.0
         :Web: http://faust.readthedocs.io/
         :Download: http://pypi.org/project/faust
         :Source: http://github.com/robinhood/faust
