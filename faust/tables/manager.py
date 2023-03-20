@@ -140,9 +140,8 @@ class TableManager(Service, TableManagerT):
         """Call when table manager is starting."""
         await self.sleep(1.0)
         if not self.should_stop:
-            if self.app.boot_strategy.enable_kafka_consumer:
-                await self._update_channels()
-                await self.recovery.start()
+            await self._update_channels()
+            await self.recovery.start()
 
     async def wait_until_tables_registered(self) -> None:
         if not self.app.producer_only and not self.app.client_only:
