@@ -36,6 +36,7 @@ BUNDLES = {
     'orjson',
     'redis',
     'rocksdb',
+    'rocksdict',
     'setproctitle',
     'statsd',
     'uvloop',
@@ -47,8 +48,8 @@ LDFLAGS = []
 LIBRARIES = []
 E_UNSUPPORTED_PYTHON = NAME + ' 1.0 requires Python %%s or later!'
 
-if sys.version_info < (3, 6):
-    raise Exception(E_UNSUPPORTED_PYTHON % ('3.6',))  # NOQA
+if sys.version_info < (3, 7):
+    raise Exception(E_UNSUPPORTED_PYTHON % ('3.7',))  # NOQA
 
 from pathlib import Path  # noqa
 
@@ -238,6 +239,8 @@ def do_setup(**kwargs):
             'Programming Language :: Python :: 3 :: Only',
             'Programming Language :: Python :: 3.6',
             'Programming Language :: Python :: 3.7',
+            'Programming Language :: Python :: 3.8',
+            'Programming Language :: Python :: 3.9',
             'Programming Language :: Python :: Implementation :: CPython',
             'Programming Language :: Python :: Implementation :: PyPy',
             'Operating System :: POSIX',
