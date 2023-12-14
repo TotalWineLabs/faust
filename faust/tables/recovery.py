@@ -784,7 +784,10 @@ class Recovery(Service):
 
     def need_recovery(self) -> bool:
         """Return :const:`True` if recovery is required."""
-        return any(v for v in self.active_remaining().values())
+        self.log.info(f"Need recovery: active_remaining={any(v for v in self.active_remaining().values())}")
+        self.log.info(f"Need recovery: standby_remaining={any(v for v in self.standby_remaining().values())}")
+        return any(v for v in self.active_remaining().values()) \
+            or any(v for v in self.standby_remaining().values())
 
     def active_remaining(self) -> Counter[TP]:
         """Return counter of remaining changes by active partition."""
