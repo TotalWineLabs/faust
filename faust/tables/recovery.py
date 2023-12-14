@@ -133,6 +133,9 @@ class Recovery(Service):
     #: Time of last event received (for any active TP)
     _last_active_event_processed_at: Optional[float]
 
+    #: Time of last event received (for any standby TP)
+    _last_standby_event_processed_at: Optional[float]    
+
     #: Time of last buffer flush
     _last_flush_at: Optional[float] = None
 
@@ -147,9 +150,15 @@ class Recovery(Service):
     _standbys_span: Optional[opentracing.Span] = None
 
     #: List of last 100 processing timestamps (monotonic).
-    #: Updated after processing every changelog record,
+    #: Updated after processing every active changelog record,
     #: used to estimate time remaining.
-    _processing_times: Deque[float]
+    _active_processing_times: Deque[float]
+
+
+    #: List of last 100 processing timestamps (monotonic).
+    #: Updated after processing every standby changelog record,
+    #: used to estimate time remaining.
+    _standby_processing_times: Deque[float]    
 
     #: Number of entries in _processing_times before
     #: we can give an estimate of time remaining.
@@ -182,7 +191,8 @@ class Recovery(Service):
 
         self._active_events_received_at = {}
         self._standby_events_received_at = {}
-        self._processing_times = deque()
+        self._active_processing_times = deque()
+        self._standby_processing_times = deque()
 
         super().__init__(**kwargs)
 
@@ -373,44 +383,77 @@ class Recovery(Service):
                 if producer is not None:
                     await self._wait(T(producer.flush)())
 
-                self.log.dev('Build highwaters for active partitions')
-                await self._wait(T(self._build_highwaters)(
-                    consumer, assigned_active_tps,
-                    active_highwaters, 'active'))
+                if active_tps:
 
-                self.log.dev('Build offsets for active partitions')
-                await self._wait(T(self._build_offsets)(
-                    consumer, assigned_active_tps, active_offsets, 'active'))
+                    self.log.dev('Build highwaters for active partitions')
+                    await self._wait(T(self._build_highwaters)(
+                        consumer, assigned_active_tps,
+                        active_highwaters, 'active'))
 
-                for tp in assigned_active_tps:
-                    if active_offsets[tp] > active_highwaters[tp]:
-                        raise ConsistencyError(
-                            E_PERSISTED_OFFSET.format(
-                                tp,
-                                active_offsets[tp],
-                                active_highwaters[tp],
-                            ),
-                        )
+                    self.log.dev('Build offsets for active partitions')
+                    await self._wait(T(self._build_offsets)(
+                        consumer, assigned_active_tps, active_offsets, 'active'))
 
-                self.log.dev('Build offsets for standby partitions')
-                await self._wait(T(self._build_offsets)(
-                    consumer, assigned_standby_tps,
-                    standby_offsets, 'standby'))
+                    for tp in assigned_active_tps:
+                        if active_offsets[tp] > active_highwaters[tp]:
+                            raise ConsistencyError(
+                                E_PERSISTED_OFFSET.format(
+                                    tp,
+                                    active_offsets[tp],
+                                    active_highwaters[tp],
+                                ),
+                            )
+                    
+                    self.log.dev('Seek offsets for active partitions')
+                    await self._wait(T(self._seek_offsets)(
+                        consumer, assigned_active_tps, active_offsets, 'active'))                    
 
-                self.log.dev('Seek offsets for active partitions')
-                await self._wait(T(self._seek_offsets)(
-                    consumer, assigned_active_tps, active_offsets, 'active'))
+                if standby_tps:
 
+                    self.log.dev('Build standby highwaters')
+                    await self._wait(
+                        T(self._build_highwaters)(
+                            consumer, assigned_standby_tps,
+                            standby_highwaters, 'standby',
+                        ),
+                    )
+                                       
+                    self.log.dev('Build offsets for standby partitions')
+                    await self._wait(T(self._build_offsets)(
+                        consumer, assigned_standby_tps,
+                        standby_offsets, 'standby'))
+
+                    for tp in assigned_standby_tps:
+                        if standby_offsets[tp] > standby_highwaters[tp]:
+                            raise ConsistencyError(
+                                E_PERSISTED_OFFSET.format(
+                                    tp,
+                                    standby_offsets[tp],
+                                    standby_highwaters[tp],
+                                ),
+                            )
+                                                            
+                    self.log.dev('Seek standby offsets')
+                    await self._wait(
+                        T(self._seek_offsets)(
+                            consumer, assigned_standby_tps, standby_offsets, 'standby'))
+
+                        
                 if self.need_recovery():
                     self.log.info('Restoring state from changelog topics...')
-                    T(consumer.resume_partitions)(active_tps)
+                    if active_tps:
+                        T(consumer.resume_partitions)(active_tps)
+
+                    if standby_tps:
+                        T(consumer.resume_partitions)(standby_tps)
+
                     # Resume partitions and start fetching.
                     self.log.info('Resuming flow...')
                     T(consumer.resume_flow)()
                     await T(cast(_App, self.app)._fetcher.maybe_start)()
                     T(self.app.flow_control.resume)()
 
-                    # Wait for actives to be up to date.
+                    # Wait for actives and standbys to be up to date.
                     # This signal will be set by _slurp_changelogs
                     if tracer is not None and span:
                         self._actives_span = tracer.start_span(
@@ -419,6 +462,14 @@ class Recovery(Service):
                             tags={'Active-Stats': self.active_stats()},
                         )
                         self.app._span_add_default_tags(span)
+
+                        self._standbys_span = tracer.start_span(
+                            'recovery-standbys',
+                            child_of=span,
+                            tags={'Standby-Stats': self.standby_stats()},
+                        )
+                        self.app._span_add_default_tags(span)
+
                     try:
                         self.signal_recovery_end.clear()
                         await self._wait(self.signal_recovery_end)
@@ -431,7 +482,10 @@ class Recovery(Service):
 
                     # recovery done.
                     self.log.info('Done reading from changelog topics')
-                    T(consumer.pause_partitions)(active_tps)
+                    if active_tps:
+                        T(consumer.pause_partitions)(active_tps)
+                    if standby_tps:
+                        T(consumer.pause_partitions)(standby_tps)
                 else:
                     self.log.info('Resuming flow...')
                     T(consumer.resume_flow)()
@@ -441,44 +495,6 @@ class Recovery(Service):
                 if span:
                     span.set_tag('Recovery-Completed', True)
                 self._set_recovery_ended()
-
-                if standby_tps:
-                    self.log.info('Starting standby partitions...')
-
-                    self.log.dev('Seek standby offsets')
-                    await self._wait(
-                        T(self._seek_offsets)(
-                            consumer, standby_tps, standby_offsets, 'standby'))
-
-                    self.log.dev('Build standby highwaters')
-                    await self._wait(
-                        T(self._build_highwaters)(
-                            consumer,
-                            standby_tps,
-                            standby_highwaters,
-                            'standby',
-                        ),
-                    )
-
-                    for tp in standby_tps:
-                        if standby_offsets[tp] > standby_highwaters[tp]:
-                            raise ConsistencyError(
-                                E_PERSISTED_OFFSET.format(
-                                    tp,
-                                    standby_offsets[tp],
-                                    standby_highwaters[tp],
-                                ),
-                            )
-
-                    if tracer is not None and span:
-                        self._standbys_span = tracer.start_span(
-                            'recovery-standbys',
-                            child_of=span,
-                            tags={'Standby-Stats': self.standby_stats()},
-                        )
-                        self.app._span_add_default_tags(span)
-                    self.log.dev('Resume standby partitions')
-                    T(consumer.resume_partitions)(standby_tps)
 
                 # Pause all our topic partitions,
                 # to make sure we don't fetch any more records from them.
@@ -510,29 +526,46 @@ class Recovery(Service):
         self._recovery_started_at = monotonic()
         self._active_events_received_at.clear()
         self._standby_events_received_at.clear()
-        self._processing_times.clear()
+        self._active_processing_times.clear()
+        self._standby_processing_times.clear()
         self._last_active_event_processed_at = None
+        self._last_standby_event_processed_at = None
 
     def _set_recovery_ended(self) -> None:
         self.in_recovery = False
         self._recovery_ended_at = monotonic()
         self._active_events_received_at.clear()
         self._standby_events_received_at.clear()
-        self._processing_times.clear()
+        self._active_processing_times.clear()
+        self._standby_processing_times.clear()
         self._last_active_event_processed_at = None
+        self._last_standby_event_processed_at = None
 
     def active_remaining_seconds(self, remaining: float) -> str:
         s = self._estimated_active_remaining_secs(remaining)
         return humanize_seconds(s, now='none') if s else '???'
+    
+    def standby_remaining_seconds(self, remaining: float) -> str:
+        s = self._estimated_active_remaining_secs(remaining)
+        return humanize_seconds(s, now='none') if s else '???'    
 
     def _estimated_active_remaining_secs(
             self, remaining: float) -> Optional[float]:
-        processing_times = self._processing_times
+        processing_times = self._active_processing_times
         if len(processing_times) >= self.num_samples_required_for_estimate:
             mean_time = statistics.mean(processing_times)
             return (mean_time * remaining) * 1.10  # add 10%
         else:
             return None
+        
+    def _estimated_standby_remaining_secs(
+            self, remaining: float) -> Optional[float]:
+        processing_times = self._standby_processing_times
+        if len(processing_times) >= self.num_samples_required_for_estimate:
+            mean_time = statistics.mean(processing_times)
+            return (mean_time * remaining) * 1.10  # add 10%
+        else:
+            return None        
 
     async def _wait(self, coro: WaitArgT) -> None:
         wait_result = await self.wait_first(
@@ -701,10 +734,12 @@ class Recovery(Service):
 
         buffers = self.buffers
         buffer_sizes = self.buffer_sizes
-        processing_times = self._processing_times
+        active_processing_times = self._active_processing_times
+        standby_processing_times = self._standby_processing_times
 
         def _maybe_signal_recovery_end() -> None:
-            if self.in_recovery and not self.active_remaining_total():
+            if self.in_recovery and \
+                not self.active_remaining_total() and not self.standby_remaining_total():
                 # apply anything stuck in the buffers
                 self.flush_buffers()
                 self._set_recovery_ended()
@@ -761,11 +796,19 @@ class Recovery(Service):
                 if is_active:
                     last_processed_at = self._last_active_event_processed_at
                     if last_processed_at is not None:
-                        processing_times.append(now_after - last_processed_at)
+                        active_processing_times.append(now_after - last_processed_at)
                         max_samples = self.num_samples_required_for_estimate
-                        if len(processing_times) > max_samples:
-                            processing_times.popleft()
+                        if len(active_processing_times) > max_samples:
+                            active_processing_times.popleft()
                     self._last_active_event_processed_at = now_after
+                else:
+                    last_standby_processed_at = self._last_standby_event_processed_at
+                    if last_standby_processed_at is not None:
+                        standby_processing_times.append(now_after - last_standby_processed_at)
+                        max_samples = self.num_samples_required_for_estimate
+                        if len(standby_processing_times) > max_samples:
+                            standby_processing_times.popleft()
+                    self._last_standby_event_processed_at = now_after
 
             _maybe_signal_recovery_end()
 
@@ -784,7 +827,9 @@ class Recovery(Service):
 
     def need_recovery(self) -> bool:
         """Return :const:`True` if recovery is required."""
-        return any(v for v in self.active_remaining().values())
+        active = any(v for v in self.active_remaining().values())
+        standby = any(v for v in self.standby_remaining().values())
+        return active or standby
 
     def active_remaining(self) -> Counter[TP]:
         """Return counter of remaining changes by active partition."""
@@ -872,12 +917,12 @@ class Recovery(Service):
             if self.in_recovery:
                 now = monotonic()
                 stats = self.active_stats()
-                num_samples = len(self._processing_times)
+                num_samples = len(self._active_processing_times)
                 if stats and \
                         num_samples >= self.num_samples_required_for_estimate:
                     remaining_total = self.active_remaining_total()
                     self.log.info(
-                        'Still fetching changelog topics for recovery, '
+                        'Still fetching changelog topics for actives recovery, '
                         'estimated time remaining %s '
                         '(total remaining=%r):\n%s',
                         self.active_remaining_seconds(remaining_total),
@@ -906,6 +951,19 @@ class Recovery(Service):
                                 'to transition out of recovery state...',
                                 humanize_seconds(secs_since_started),
                             )
+                standby_stats = self.standby_stats()
+                num_samples = len(self._standby_processing_times)
+                if standby_stats and num_samples >= self.num_samples_required_for_estimate:
+                    standby_remaining_total = self.standby_remaining_total()
+                    self.log.info(
+                        'Still fetching changelog topics for standbys recovery, '
+                        'estimated time remaining %s '
+                        '(total remaining=%r):\n%s',
+                        self.standby_remaining_seconds(standby_remaining_total),
+                        standby_remaining_total,
+                        self._stats_to_logtable(
+                            'Remaining for standby recovery', standby_stats),
+                    )
 
     async def _verify_remaining(
             self,
