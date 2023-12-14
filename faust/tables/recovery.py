@@ -914,23 +914,38 @@ class Recovery(Service):
                 interval, name='Recovery.stats'):
             if self.in_recovery:
                 now = monotonic()
-                stats = self.active_stats()
-                num_samples = len(self._active_processing_times)
-                if stats and \
-                        num_samples >= self.num_samples_required_for_estimate:
+                active_stats = self.active_stats()
+                standby_stats = self.standby_stats()
+                active_num_samples = len(self._active_processing_times)
+                standby_num_samples = len(self._standby_processing_times)
+
+                if active_stats and active_num_samples >= self.num_samples_required_for_estimate:
                     remaining_total = self.active_remaining_total()
                     self.log.info(
-                        'Still fetching changelog topics for actives recovery, '
+                        'Still fetching active changelog topics for recovery, '
                         'estimated time remaining %s '
                         '(total remaining=%r):\n%s',
                         self.active_remaining_seconds(remaining_total),
                         remaining_total,
                         self._stats_to_logtable(
-                            'Remaining for active recovery', stats),
+                            'Remaining for active recovery', active_stats),
                     )
-                elif stats:
-                    await self._verify_remaining(now, stats)
-                else:
+                elif active_stats:
+                    await self._verify_remaining(now, active_stats)
+
+                if standby_stats and standby_num_samples >= self.num_samples_required_for_estimate:
+                    standby_remaining_total = self.standby_remaining_total()
+                    self.log.info(
+                        'Still fetching standby changelog topics for recovery, '
+                        'estimated time remaining %s '
+                        '(total remaining=%r):\n%s',
+                        self.standby_remaining_seconds(standby_remaining_total),
+                        standby_remaining_total,
+                        self._stats_to_logtable(
+                            'Remaining for standby recovery', standby_stats),
+                    )
+
+                if not (active_stats and standby_stats):
                     recovery_started_at = self._recovery_started_at
                     if recovery_started_at is None:
                         self.log.error(
@@ -949,19 +964,7 @@ class Recovery(Service):
                                 'to transition out of recovery state...',
                                 humanize_seconds(secs_since_started),
                             )
-                standby_stats = self.standby_stats()
-                num_samples = len(self._standby_processing_times)
-                if standby_stats and num_samples >= self.num_samples_required_for_estimate:
-                    standby_remaining_total = self.standby_remaining_total()
-                    self.log.info(
-                        'Still fetching changelog topics for standbys recovery, '
-                        'estimated time remaining %s '
-                        '(total remaining=%r):\n%s',
-                        self.standby_remaining_seconds(standby_remaining_total),
-                        standby_remaining_total,
-                        self._stats_to_logtable(
-                            'Remaining for standby recovery', standby_stats),
-                    )
+                
 
     async def _verify_remaining(
             self,
