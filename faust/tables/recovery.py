@@ -484,8 +484,6 @@ class Recovery(Service):
                     self.log.info('Done reading from changelog topics')
                     if active_tps:
                         T(consumer.pause_partitions)(active_tps)
-                    if standby_tps:
-                        T(consumer.pause_partitions)(standby_tps)
                 else:
                     self.log.info('Resuming flow...')
                     T(consumer.resume_flow)()
