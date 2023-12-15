@@ -945,7 +945,7 @@ class Recovery(Service):
                             'Remaining for standby recovery', standby_stats),
                     )
 
-                if not (active_stats and standby_stats):
+                if not (active_stats or standby_stats):
                     recovery_started_at = self._recovery_started_at
                     if recovery_started_at is None:
                         self.log.error(
