@@ -876,7 +876,7 @@ class Recovery(Service):
                               offsets[tp],
                               highwater - offsets[tp])
             for tp, highwater in self.standby_highwaters.items()
-            if offsets[tp] is not None and highwater - offsets[tp] != 0
+            if offsets[tp] is not None and highwater - offsets[tp] > 0
 
         }
 
