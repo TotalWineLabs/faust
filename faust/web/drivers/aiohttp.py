@@ -299,9 +299,10 @@ class Web(base.Web):
 
     async def start_server(self) -> None:
         """Start the web server."""
-        await self._runner.setup()
-        site = self._create_site()
-        await site.start()
+        if self._runner.server is None:
+            await self._runner.setup()
+            site = self._create_site()
+            await site.start()
 
     async def stop_server(self) -> None:
         """Stop the web server."""
