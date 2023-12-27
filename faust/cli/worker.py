@@ -12,7 +12,7 @@ from yarl import URL
 
 from faust.worker import Worker as FaustWorker
 from faust.types import AppT
-from faust.types._env import WEB_BIND, WEB_PORT, WEB_TRANSPORT
+from faust.types._env import WEB_BIND, WEB_PORT, WEB_TRANSPORT, SHUTDOWN_MEMORY_PERCENT
 
 from . import params
 from .base import AppCommand, now_builtin_worker_options, option
@@ -46,6 +46,10 @@ class worker(AppCommand):
                default=socket.gethostname(), type=str,
                help=f'Canonical host name for the web server '
                     f'(default: {WEB_BIND})'),
+        option('--shutdown-memory-percent', '-s',
+               default=None, type=float,
+               help=f'Memory consumption percentage that triggers shutdown '
+                    f'(default: {SHUTDOWN_MEMORY_PERCENT})'),
     ]
 
     options = (cast(List, worker_options) +
@@ -74,6 +78,7 @@ class worker(AppCommand):
                              web_bind: Optional[str],
                              web_host: str,
                              web_transport: URL,
+                             shutdown_memory_percent: float,
                              **kwargs: Any) -> None:
         self.app.conf.web_enabled = with_web
         if web_port is not None:
@@ -84,6 +89,8 @@ class worker(AppCommand):
             self.app.conf.web_host = web_host
         if web_transport is not None:
             self.app.conf.web_transport = web_transport
+        if shutdown_memory_percent is not None:
+            self.app.conf.worker_shutdown_memory_utilization_percent = shutdown_memory_percent
 
     @property
     def _Worker(self) -> Type[Worker]:

@@ -354,6 +354,16 @@ SETTINGS_SKIP: Set[inspect._ParameterKind] = {
     inspect.Parameter.VAR_KEYWORD,
 }
 
+#: Memory utilization threshold that triggers a faust worker to
+#: shutdown. Applicable only when faust is deployed using a `Worker`.
+#:
+#: An app will abruptly terminate if it exceeds it's allocated memory limit.
+#: This may have unintendent consequences, especially when sateful Tables are
+#: involved. This settings allows for graceful shutdown when high memory utilization
+#: is detected. This setting is disabled by default. To enable, set percent value
+#: between >0.0 and <=1.0
+WORKER_SHUTDOWN_MEMORY_UTILIZATION_PERCENT = 0.0
+
 AutodiscoverArg = Union[
     bool,
     Iterable[str],
@@ -406,6 +416,7 @@ class Settings(abc.ABC):
     web_cors_options: Optional[Mapping[str, ResourceOptions]] = None
     worker_redirect_stdouts: bool = True
     worker_redirect_stdouts_level: Severity = 'WARN'
+    worker_shutdown_memory_utilization_percent: float = WORKER_SHUTDOWN_MEMORY_UTILIZATION_PERCENT
 
     _id: str
     _origin: Optional[str] = None
@@ -563,6 +574,7 @@ class Settings(abc.ABC):
             web_cors_options: Mapping[str, ResourceOptions] = None,
             worker_redirect_stdouts: bool = None,
             worker_redirect_stdouts_level: Severity = None,
+            worker_shutdown_memory_utilization_percent: float = None,
             Agent: SymbolArg[Type[AgentT]] = None,
             ConsumerScheduler: SymbolArg[Type[SchedulingStrategyT]] = None,
             Event: SymbolArg[Type[EventT]] = None,
@@ -734,6 +746,8 @@ class Settings(abc.ABC):
             self.worker_redirect_stdouts = worker_redirect_stdouts
         if worker_redirect_stdouts_level is not None:
             self.worker_redirect_stdouts_level = worker_redirect_stdouts_level
+        if worker_shutdown_memory_utilization_percent is not None:
+            self.worker_shutdown_memory_utilization_percent = worker_shutdown_memory_utilization_percent
 
         if reply_to_prefix is not None:
             self.reply_to_prefix = reply_to_prefix
