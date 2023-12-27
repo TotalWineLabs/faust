@@ -826,7 +826,7 @@ class Recovery(Service):
     def need_recovery(self) -> bool:
         """Return :const:`True` if recovery is required."""
         active = any(v for v in self.active_remaining().values())
-        standby = any(v for v in self.standby_remaining().values())
+        standby = any(v for v in self.standby_remaining().values() if v > 0)
         return active or standby
 
     def active_remaining(self) -> Counter[TP]:
