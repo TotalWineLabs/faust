@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import sys
+import psutil
 
 from collections import defaultdict
 from itertools import chain
@@ -19,6 +20,7 @@ import mode
 from aiokafka.structs import TopicPartition
 from mode import ServiceT, get_logger
 from mode.utils.logging import Severity, formatter2
+from mode.utils.locks import Event
 
 from .types import AppT, SensorT, TP, TopicT
 from .types._env import (
@@ -42,6 +44,14 @@ __all__ = ['Worker']
 PSIDENT = '[Faust:Worker]'
 
 TP_TYPES = (TP, TopicPartition)
+
+W_SHUTDOWN_DUE_TO_MEMORY = '''\
+Worker process is consuming {percent} of available memory.
+
+Application will gracefully shutdown now to avoid an abrupt termination due 
+an out of memory situation. If this happens frequently, consider
+increasing the application's memory limit.
+'''
 
 logger = get_logger(__name__)
 
@@ -217,6 +227,14 @@ class Worker(mode.Worker):
     #: Set by signal to avoid printing an OK status.
     _shutdown_immediately: bool = False
 
+    #: Set when worker has initilized and started
+    _on_startup_finished: Event
+
+    #: OS process running the worker
+    _worker_process: psutil.Process
+
+    shutdown_memory_utilization_percent: float
+
     def __init__(self,
                  app: AppT,
                  *services: ServiceT,
@@ -234,11 +252,13 @@ class Worker(mode.Worker):
                  redirect_stdouts: bool = None,
                  redirect_stdouts_level: Severity = None,
                  logging_config: Dict = None,
+                 shutdown_memory_utilization_percent: float = None,
                  **kwargs: Any) -> None:
         self.app = app
         self.sensors = set(sensors or [])
         self.workdir = Path(workdir or Path.cwd())
         conf = app.conf
+        self.shutdown_memory_utilization_percent = conf.worker_shutdown_memory_utilization_percent
         if redirect_stdouts is None:
             redirect_stdouts = conf.worker_redirect_stdouts
         if redirect_stdouts_level is None:
@@ -246,6 +266,7 @@ class Worker(mode.Worker):
                 conf.worker_redirect_stdouts_level or logging.INFO)
         if logging_config is None:
             logging_config = app.conf.logging_config
+
         super().__init__(
             *services,
             debug=debug,
@@ -263,6 +284,8 @@ class Worker(mode.Worker):
             loop=loop,
             **kwargs)
         self.spinner = terminal.Spinner(file=self.stdout)
+        self._on_startup_finished = Event()
+        self._worker_process = psutil.Process(os.getpid())
 
     async def on_start(self) -> None:
         """Signal called every time the worker starts."""
@@ -293,6 +316,7 @@ class Worker(mode.Worker):
 
     async def on_startup_finished(self) -> None:
         """Signal called when worker has started."""
+        self._on_startup_finished.set()
         if self._shutdown_immediately:
             return self._on_shutdown_immediately()
         # block detection started here after changelog stuff,
@@ -392,3 +416,24 @@ class Worker(mode.Worker):
             logger.addHandler(
                 terminal.SpinnerHandler(self.spinner, level=logging.DEBUG))
             logger.setLevel(logging.DEBUG)
+
+
+    @mode.Service.task
+    async def _stop_worker_when_high_memory_utilization(self) -> None:
+        """Monitor worker's memory utilization.
+        If memory utilization exceeds set threshold then gracefully stop 
+        worker before we run out of memory.
+        """
+        await self.wait(self._on_startup_finished)
+        while not self.should_stop:
+            used_percent = self._worker_process.memory_percent()        
+            if self.shutdown_memory_utilization_percent > 0:
+                if used_percent > self.shutdown_memory_utilization_percent:
+                    self.log.info(
+                        W_SHUTDOWN_DUE_TO_MEMORY.format(
+                            percent='{:.2%}'.format(used_percent)
+                        )
+                    )
+                    await self.stop()
+                else:
+                    await self.sleep(30)
