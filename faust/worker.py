@@ -435,5 +435,4 @@ class Worker(mode.Worker):
                         )
                     )
                     await self.stop()
-                else:
-                    await self.sleep(30)
+            await self.sleep(30)
