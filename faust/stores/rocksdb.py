@@ -451,10 +451,11 @@ class Store(base.SerializedStore):
         for tp, offset in tp_offsets.items():
             self.set_persisted_offset(tp, offset)
 
-    def _set(self, key: bytes, value: Optional[bytes]) -> None:
-        event = current_event()
-        assert event is not None
-        partition = event.message.partition
+    def _set(self, key: bytes, value: Optional[bytes], partition: int = None) -> None:
+        if partition is None:
+            event = current_event()
+            assert event is not None
+            partition = event.message.partition
         db = self._db_for_partition(partition)
         self._key_index[key] = partition
         db.put(key, value)
@@ -472,34 +473,42 @@ class Store(base.SerializedStore):
             path, read_only=self.read_only if os.path.isfile(path) else False
         )
 
-    def _get(self, key: bytes) -> Optional[bytes]:
-        event = current_event()
-        partition_from_message = (
-            event is not None
-            and not self.table.is_global
-            and not self.table.use_partitioner
-        )
-        if partition_from_message:
-            partition = event.message.partition
+    def _get(self, key: bytes, partition: int = None) -> Optional[bytes]:
+        if partition is not None:
             db = self._db_for_partition(partition)
-            value = db.get(key)
-            if value is not None:
-                self._key_index[key] = partition
-            return value
-        else:
-            dbvalue = self._get_bucket_for_key(key)
-            if dbvalue is None:
-                return None
-            db, value = dbvalue
+            if self.use_rocksdict:
+                key_may_exist = db.key_may_exist(key)
+            else:
+                key_may_exist = db.key_may_exist(key)[0]
+            return db.get(key) if key_may_exist else None
+        else:  
+            event = current_event()
+            partition_from_message = (
+                event is not None
+                and not self.table.is_global
+                and not self.table.use_partitioner
+            )
+            if partition_from_message:
+                partition = event.message.partition
+                db = self._db_for_partition(partition)
+                value = db.get(key)
+                if value is not None:
+                    self._key_index[key] = partition
+                return value
+            else:
+                dbvalue = self._get_bucket_for_key(key)
+                if dbvalue is None:
+                    return None
+                db, value = dbvalue
 
-            if value is None:
-                if self.use_rocksdict:
-                    key_may_exist = db.key_may_exist(key)
-                else:
-                    key_may_exist = db.key_may_exist(key)[0]
-                if key_may_exist:
-                    return db.get(key)
-            return value
+                if value is None:
+                    if self.use_rocksdict:
+                        key_may_exist = db.key_may_exist(key)
+                    else:
+                        key_may_exist = db.key_may_exist(key)[0]
+                    if key_may_exist:
+                        return db.get(key)
+                return value
 
     def _get_bucket_for_key(self, key: bytes) -> Optional[_DBValueTuple]:
         dbs: Iterable[PartitionDB]
@@ -521,9 +530,14 @@ class Store(base.SerializedStore):
                     return _DBValueTuple(db, value)
         return None
 
-    def _del(self, key: bytes) -> None:
-        for db in self._dbs_for_key(key):
-            db.delete(key)
+    def _del(self, key: bytes, partition: int = None) -> None:
+        if partition is not None:
+            db = self._db_for_partition(partition)
+            db.delete(key)    
+        else:
+            for db in self._dbs_for_key(key):
+                db.delete(key)
+
 
     async def on_rebalance(self,
                            table: CollectionT,
