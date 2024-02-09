@@ -42,6 +42,7 @@ from faust.types import (
     SchemaT,
     TP,
     TopicT,
+    MessageSentCallback,    
 )
 from faust.types.models import ModelArg, ModelT
 from faust.types.stores import StoreT
@@ -249,12 +250,20 @@ class Collection(Service, CollectionT):
         """Reset local state."""
         self.data.reset_state()
 
+    def _changelog_sent_with_callback(self, callback: MessageSentCallback):
+        def _inner(fut: FutureMessage):
+            self._on_changelog_sent(fut)
+            callback(fut)
+
+        return _inner
+    
     def send_changelog(self,
                        partition: Optional[int],
                        key: Any,
                        value: Any,
                        key_serializer: CodecArg = None,
-                       value_serializer: CodecArg = None) -> FutureMessage:
+                       value_serializer: CodecArg = None,
+                       callback: MessageSentCallback = None) -> FutureMessage:
         """Send modification event to changelog topic."""
         if key_serializer is None:
             key_serializer = self.key_serializer
@@ -266,7 +275,9 @@ class Collection(Service, CollectionT):
             partition=partition,
             key_serializer=key_serializer,
             value_serializer=value_serializer,
-            callback=self._on_changelog_sent,
+            callback=self._on_changelog_sent 
+                        if callback is None 
+                        else self._changelog_sent_with_callback(callback),
             # Ensures final partition number is ready in ret.message.partition
             eager_partitioning=True,
         )
