@@ -736,8 +736,7 @@ class Recovery(Service):
         standby_processing_times = self._standby_processing_times
 
         def _maybe_signal_recovery_end() -> None:
-            if self.in_recovery and \
-                not self.active_remaining_total() and not self.standby_remaining_total():
+            if self.in_recovery and not self.need_recovery():
                 # apply anything stuck in the buffers
                 self.flush_buffers()
                 self._set_recovery_ended()
