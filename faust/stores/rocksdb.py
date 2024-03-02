@@ -46,6 +46,7 @@ DEFAULT_TARGET_FILE_SIZE_BASE = 67108864
 DEFAULT_BLOCK_CACHE_SIZE = 2 * 1024**3
 DEFAULT_BLOCK_CACHE_COMPRESSED_SIZE = 500 * 1024**2
 DEFAULT_BLOOM_FILTER_SIZE = 3
+DEFAULT_SET_CACHE_INDEX_AND_FILTER_BLOCKS = False
 ERRORS_ROCKS_IO_ERROR = (
     Exception  # use general exception to avoid missing exception issues
 )
@@ -100,6 +101,7 @@ class RocksDBOptions:
     block_cache_size: int = DEFAULT_BLOCK_CACHE_SIZE
     block_cache_compressed_size: int = DEFAULT_BLOCK_CACHE_COMPRESSED_SIZE
     bloom_filter_size: int = DEFAULT_BLOOM_FILTER_SIZE
+    set_cache_index_and_filter_blocks: bool = DEFAULT_SET_CACHE_INDEX_AND_FILTER_BLOCKS
     use_rocksdict: bool = USE_ROCKSDICT
     extra_options: Mapping
 
@@ -112,6 +114,7 @@ class RocksDBOptions:
         block_cache_size: Optional[int] = None,
         block_cache_compressed_size: Optional[int] = None,
         bloom_filter_size: Optional[int] = None,
+        set_cache_index_and_filter_blocks: Optional[bool] = None,
         use_rocksdict: Optional[bool] = None,
         **kwargs: Any,
     ) -> None:
@@ -129,6 +132,8 @@ class RocksDBOptions:
             self.block_cache_compressed_size = block_cache_compressed_size
         if bloom_filter_size is not None:
             self.bloom_filter_size = bloom_filter_size
+        if set_cache_index_and_filter_blocks is not None:
+            self.set_cache_index_and_filter_blocks = set_cache_index_and_filter_blocks
         if use_rocksdict is not None:
             self.use_rocksdict = use_rocksdict
         self.extra_options = kwargs
@@ -165,6 +170,7 @@ class RocksDBOptions:
             table_factory_options.set_index_type(
                 rocksdict.BlockBasedIndexType.binary_search()
             )
+            table_factory_options.set_cache_index_and_filter_blocks(self.set_cache_index_and_filter_blocks)
             db_options.set_block_based_table_factory(table_factory_options)
             return db_options
         else:
