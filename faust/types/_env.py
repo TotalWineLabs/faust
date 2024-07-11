@@ -13,7 +13,8 @@ __all__ = [
     'WEB_BIND',
     'WEB_TRANSPORT',
     'WORKDIR',
-    'SHUTDOWN_MEMORY_PERCENT'
+    'SHUTDOWN_MEMORY_PERCENT',
+    'SHUTDOWN_MEMORY_BYTES'
 ]
 
 PREFICES: Sequence[str] = ['FAUST_', 'F_']
@@ -54,3 +55,5 @@ WEB_BIND: str = _getenv('F_WEB_BIND', '0.0.0.0')
 WEB_TRANSPORT: URL = URL(_getenv('WEB_TRANSPORT', 'tcp://'))
 
 SHUTDOWN_MEMORY_PERCENT: float = float(_getenv('SHUTDOWN_MEMORY_PERCENT', '0.0'))
+
+SHUTDOWN_MEMORY_BYTES: float = float(_getenv('SHUTDOWN_MEMORY_BYTES', '0.0'))
