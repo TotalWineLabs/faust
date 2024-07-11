@@ -42,6 +42,7 @@ BUNDLES = {
     'uvloop',
     'eventlet',
     'yaml',
+    'prometheus',
 }
 CFLAGS = ['-O2']
 LDFLAGS = []

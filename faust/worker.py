@@ -46,7 +46,7 @@ PSIDENT = '[Faust:Worker]'
 TP_TYPES = (TP, TopicPartition)
 
 W_SHUTDOWN_DUE_TO_MEMORY = '''\
-Worker process is consuming {percent} of available memory.
+Worker process is consuming {amount} of available memory.
 
 Application will gracefully shutdown now to avoid an abrupt termination due 
 an out of memory situation. If this happens frequently, consider
@@ -235,6 +235,8 @@ class Worker(mode.Worker):
 
     shutdown_memory_utilization_percent: float
 
+    shutdown_memory_utilization_bytes: float
+
     def __init__(self,
                  app: AppT,
                  *services: ServiceT,
@@ -253,12 +255,14 @@ class Worker(mode.Worker):
                  redirect_stdouts_level: Severity = None,
                  logging_config: Dict = None,
                  shutdown_memory_utilization_percent: float = None,
+                 shutdown_memory_utilization_bytes: float = None,
                  **kwargs: Any) -> None:
         self.app = app
         self.sensors = set(sensors or [])
         self.workdir = Path(workdir or Path.cwd())
         conf = app.conf
         self.shutdown_memory_utilization_percent = conf.worker_shutdown_memory_utilization_percent
+        self.shutdown_memory_utilization_bytes = conf.worker_shutdown_memory_utilization_bytes
         if redirect_stdouts is None:
             redirect_stdouts = conf.worker_redirect_stdouts
         if redirect_stdouts_level is None:
@@ -426,13 +430,22 @@ class Worker(mode.Worker):
         """
         await self.wait(self._on_startup_finished)
         while not self.should_stop:
-            used_percent = self._worker_process.memory_percent()        
+            used_percent = self._worker_process.memory_percent()
+            used_bytes = self._worker_process.memory_info().rss        
             if self.shutdown_memory_utilization_percent > 0:
                 if used_percent > self.shutdown_memory_utilization_percent:
                     self.log.info(
                         W_SHUTDOWN_DUE_TO_MEMORY.format(
-                            percent='{:.2%}'.format(used_percent)
+                            amount='{:.2%}'.format(used_percent)
                         )
                     )
                     await self.stop()
-            await self.sleep(30)
+            if self.shutdown_memory_utilization_bytes > 0:
+                if used_bytes > self.shutdown_memory_utilization_bytes:
+                    self.log.info(
+                        W_SHUTDOWN_DUE_TO_MEMORY.format(
+                            amount='{:.2f} bytes'.format(used_bytes)
+                        )
+                    )
+                    await self.stop()
+            await self.sleep(15)
