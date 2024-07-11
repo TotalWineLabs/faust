@@ -146,17 +146,18 @@ class SerializedStore(Store[KT, VT]):
     """Base class for table storage drivers requiring serialization."""
 
     @abc.abstractmethod
-    def _get(self, key: bytes) -> Optional[bytes]:  # pragma: no cover
+    def _get(self, key: bytes, partition: Any = None) -> Optional[bytes]:  # pragma: no cover
         ...
 
     @abc.abstractmethod
     def _set(self,
              key: bytes,
-             value: Optional[bytes]) -> None:  # pragma: no cover
+             value: Optional[bytes],
+             partition: Any = None) -> None:  # pragma: no cover
         ...
 
     @abc.abstractmethod
-    def _del(self, key: bytes) -> None:  # pragma: no cover
+    def _del(self, key: bytes, partition: Any = None) -> None:  # pragma: no cover
         ...
 
     @abc.abstractmethod
@@ -247,3 +248,17 @@ class SerializedStore(Store[KT, VT]):
     def clear(self) -> None:
         """Clear all data from this K/V store."""
         self._clear()
+
+    def update(self, *args: Any, partition: int = None, **kwargs: Any) -> None:
+        for d in args:
+            for key, value in d.items():
+                self._set(self._encode_key(key), self._encode_value(value), partition=partition)
+        for key, value in kwargs.items():
+            self._set(self._encode_key(key), self._encode_value(value), partition=partition)
+
+    def get_for_partition(self, key: KT, partition: int) -> VT:
+        value = self._get(self._encode_key(key), partition=partition)
+        return self._decode_value(value) if value is not None else None
+    
+    def del_for_partition(self, key, partition: int) -> None:
+        return self._del(self._encode_key(key), partition=partition)

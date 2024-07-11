@@ -12,7 +12,7 @@ from yarl import URL
 
 from faust.worker import Worker as FaustWorker
 from faust.types import AppT
-from faust.types._env import WEB_BIND, WEB_PORT, WEB_TRANSPORT, SHUTDOWN_MEMORY_PERCENT
+from faust.types._env import WEB_BIND, WEB_PORT, WEB_TRANSPORT, SHUTDOWN_MEMORY_PERCENT, SHUTDOWN_MEMORY_BYTES
 
 from . import params
 from .base import AppCommand, now_builtin_worker_options, option
@@ -50,6 +50,10 @@ class worker(AppCommand):
                default=None, type=float,
                help=f'Memory consumption percentage that triggers shutdown '
                     f'(default: {SHUTDOWN_MEMORY_PERCENT})'),
+        option('--shutdown-memory-bytes', '-s',
+               default=None, type=float,
+               help=f'Memory consumption bytes that triggers shutdown '
+                    f'(default: {SHUTDOWN_MEMORY_BYTES})'),                    
     ]
 
     options = (cast(List, worker_options) +
@@ -79,6 +83,7 @@ class worker(AppCommand):
                              web_host: str,
                              web_transport: URL,
                              shutdown_memory_percent: float,
+                             shutdown_memory_bytes: float,
                              **kwargs: Any) -> None:
         self.app.conf.web_enabled = with_web
         if web_port is not None:
@@ -91,6 +96,8 @@ class worker(AppCommand):
             self.app.conf.web_transport = web_transport
         if shutdown_memory_percent is not None:
             self.app.conf.worker_shutdown_memory_utilization_percent = shutdown_memory_percent
+        if shutdown_memory_bytes is not None:
+            self.app.conf.worker_shutdown_memory_utilization_bytes = shutdown_memory_bytes
 
     @property
     def _Worker(self) -> Type[Worker]:

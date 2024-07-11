@@ -46,6 +46,7 @@ DEFAULT_TARGET_FILE_SIZE_BASE = 67108864
 DEFAULT_BLOCK_CACHE_SIZE = 2 * 1024**3
 DEFAULT_BLOCK_CACHE_COMPRESSED_SIZE = 500 * 1024**2
 DEFAULT_BLOOM_FILTER_SIZE = 3
+DEFAULT_SET_CACHE_INDEX_AND_FILTER_BLOCKS = False
 ERRORS_ROCKS_IO_ERROR = (
     Exception  # use general exception to avoid missing exception issues
 )
@@ -100,6 +101,7 @@ class RocksDBOptions:
     block_cache_size: int = DEFAULT_BLOCK_CACHE_SIZE
     block_cache_compressed_size: int = DEFAULT_BLOCK_CACHE_COMPRESSED_SIZE
     bloom_filter_size: int = DEFAULT_BLOOM_FILTER_SIZE
+    set_cache_index_and_filter_blocks: bool = DEFAULT_SET_CACHE_INDEX_AND_FILTER_BLOCKS
     use_rocksdict: bool = USE_ROCKSDICT
     extra_options: Mapping
 
@@ -112,6 +114,7 @@ class RocksDBOptions:
         block_cache_size: Optional[int] = None,
         block_cache_compressed_size: Optional[int] = None,
         bloom_filter_size: Optional[int] = None,
+        set_cache_index_and_filter_blocks: Optional[bool] = None,
         use_rocksdict: Optional[bool] = None,
         **kwargs: Any,
     ) -> None:
@@ -129,6 +132,8 @@ class RocksDBOptions:
             self.block_cache_compressed_size = block_cache_compressed_size
         if bloom_filter_size is not None:
             self.bloom_filter_size = bloom_filter_size
+        if set_cache_index_and_filter_blocks is not None:
+            self.set_cache_index_and_filter_blocks = set_cache_index_and_filter_blocks
         if use_rocksdict is not None:
             self.use_rocksdict = use_rocksdict
         self.extra_options = kwargs
@@ -165,6 +170,7 @@ class RocksDBOptions:
             table_factory_options.set_index_type(
                 rocksdict.BlockBasedIndexType.binary_search()
             )
+            table_factory_options.set_cache_index_and_filter_blocks(self.set_cache_index_and_filter_blocks)
             db_options.set_block_based_table_factory(table_factory_options)
             return db_options
         else:
@@ -451,10 +457,11 @@ class Store(base.SerializedStore):
         for tp, offset in tp_offsets.items():
             self.set_persisted_offset(tp, offset)
 
-    def _set(self, key: bytes, value: Optional[bytes]) -> None:
-        event = current_event()
-        assert event is not None
-        partition = event.message.partition
+    def _set(self, key: bytes, value: Optional[bytes], partition: int = None) -> None:
+        if partition is None:
+            event = current_event()
+            assert event is not None
+            partition = event.message.partition
         db = self._db_for_partition(partition)
         self._key_index[key] = partition
         db.put(key, value)
@@ -472,34 +479,42 @@ class Store(base.SerializedStore):
             path, read_only=self.read_only if os.path.isfile(path) else False
         )
 
-    def _get(self, key: bytes) -> Optional[bytes]:
-        event = current_event()
-        partition_from_message = (
-            event is not None
-            and not self.table.is_global
-            and not self.table.use_partitioner
-        )
-        if partition_from_message:
-            partition = event.message.partition
+    def _get(self, key: bytes, partition: int = None) -> Optional[bytes]:
+        if partition is not None:
             db = self._db_for_partition(partition)
-            value = db.get(key)
-            if value is not None:
-                self._key_index[key] = partition
-            return value
-        else:
-            dbvalue = self._get_bucket_for_key(key)
-            if dbvalue is None:
-                return None
-            db, value = dbvalue
+            if self.use_rocksdict:
+                key_may_exist = db.key_may_exist(key)
+            else:
+                key_may_exist = db.key_may_exist(key)[0]
+            return db.get(key) if key_may_exist else None
+        else:  
+            event = current_event()
+            partition_from_message = (
+                event is not None
+                and not self.table.is_global
+                and not self.table.use_partitioner
+            )
+            if partition_from_message:
+                partition = event.message.partition
+                db = self._db_for_partition(partition)
+                value = db.get(key)
+                if value is not None:
+                    self._key_index[key] = partition
+                return value
+            else:
+                dbvalue = self._get_bucket_for_key(key)
+                if dbvalue is None:
+                    return None
+                db, value = dbvalue
 
-            if value is None:
-                if self.use_rocksdict:
-                    key_may_exist = db.key_may_exist(key)
-                else:
-                    key_may_exist = db.key_may_exist(key)[0]
-                if key_may_exist:
-                    return db.get(key)
-            return value
+                if value is None:
+                    if self.use_rocksdict:
+                        key_may_exist = db.key_may_exist(key)
+                    else:
+                        key_may_exist = db.key_may_exist(key)[0]
+                    if key_may_exist:
+                        return db.get(key)
+                return value
 
     def _get_bucket_for_key(self, key: bytes) -> Optional[_DBValueTuple]:
         dbs: Iterable[PartitionDB]
@@ -521,9 +536,14 @@ class Store(base.SerializedStore):
                     return _DBValueTuple(db, value)
         return None
 
-    def _del(self, key: bytes) -> None:
-        for db in self._dbs_for_key(key):
-            db.delete(key)
+    def _del(self, key: bytes, partition: int = None) -> None:
+        if partition is not None:
+            db = self._db_for_partition(partition)
+            db.delete(key)    
+        else:
+            for db in self._dbs_for_key(key):
+                db.delete(key)
+
 
     async def on_rebalance(self,
                            table: CollectionT,
