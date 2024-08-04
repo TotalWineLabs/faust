@@ -42,6 +42,7 @@ BUNDLES = {
     'uvloop',
     'eventlet',
     'yaml',
+    'prometheus',
 }
 CFLAGS = ['-O2']
 LDFLAGS = []
@@ -192,7 +193,7 @@ else:
 
 def do_setup(**kwargs):
     setup(
-        name=NAME,
+        name='twm-faust',
         version=meta['version'],
         description=meta['doc'],
         long_description=long_description,

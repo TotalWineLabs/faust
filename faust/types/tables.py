@@ -28,7 +28,7 @@ from .events import EventT
 from .stores import StoreT
 from .streams import JoinableT
 from .topics import TopicT
-from .tuples import FutureMessage, TP
+from .tuples import FutureMessage, TP, MessageSentCallback
 from .windows import WindowT
 
 if typing.TYPE_CHECKING:
@@ -156,7 +156,8 @@ class CollectionT(ServiceT, JoinableT):
                        key: Any,
                        value: Any,
                        key_serializer: CodecArg = None,
-                       value_serializer: CodecArg = None) -> FutureMessage:
+                       value_serializer: CodecArg = None,
+                       callback: MessageSentCallback = None) -> FutureMessage:
         ...
 
     @abc.abstractmethod

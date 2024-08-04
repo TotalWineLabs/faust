@@ -364,6 +364,10 @@ SETTINGS_SKIP: Set[inspect._ParameterKind] = {
 #: between >0.0 and <=1.0
 WORKER_SHUTDOWN_MEMORY_UTILIZATION_PERCENT = 0.0
 
+#: Memory utilization (bytes) threshold that triggers a faust worker to
+#: shutdown. Applicable only when faust is deployed using a `Worker`.
+WORKER_SHUTDOWN_MEMORY_UTILIZATION_BYTES = 0.0
+
 AutodiscoverArg = Union[
     bool,
     Iterable[str],
@@ -417,6 +421,7 @@ class Settings(abc.ABC):
     worker_redirect_stdouts: bool = True
     worker_redirect_stdouts_level: Severity = 'WARN'
     worker_shutdown_memory_utilization_percent: float = WORKER_SHUTDOWN_MEMORY_UTILIZATION_PERCENT
+    worker_shutdown_memory_utilization_bytes: float = WORKER_SHUTDOWN_MEMORY_UTILIZATION_BYTES
 
     _id: str
     _origin: Optional[str] = None
@@ -575,6 +580,7 @@ class Settings(abc.ABC):
             worker_redirect_stdouts: bool = None,
             worker_redirect_stdouts_level: Severity = None,
             worker_shutdown_memory_utilization_percent: float = None,
+            worker_shutdown_memory_utilization_bytes: float = None,
             Agent: SymbolArg[Type[AgentT]] = None,
             ConsumerScheduler: SymbolArg[Type[SchedulingStrategyT]] = None,
             Event: SymbolArg[Type[EventT]] = None,
@@ -748,6 +754,8 @@ class Settings(abc.ABC):
             self.worker_redirect_stdouts_level = worker_redirect_stdouts_level
         if worker_shutdown_memory_utilization_percent is not None:
             self.worker_shutdown_memory_utilization_percent = worker_shutdown_memory_utilization_percent
+        if worker_shutdown_memory_utilization_bytes is not None:
+            self.worker_shutdown_memory_utilization_bytes = worker_shutdown_memory_utilization_bytes
 
         if reply_to_prefix is not None:
             self.reply_to_prefix = reply_to_prefix
