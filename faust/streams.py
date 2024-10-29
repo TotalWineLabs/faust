@@ -905,21 +905,20 @@ class Stream(StreamT[T_co], Service):
                     except Skip:
                         value = skipped_value
 
-                if value is skipped_value:
-                    continue
-                self.events_total += 1
                 try:
-                    yield value
+                    if value is not skipped_value:
+                        self.events_total += 1
+                        yield value
                 finally:
                     self.current_event = None
-                    if do_ack and event is not None:
+                    # Ensure we ack the filtered out message
+                    if event is not None and (do_ack or value is skipped_value):
                         # This inlines self.ack
                         last_stream_to_ack = event.ack()
                         message = event.message
                         tp = event.message.tp
                         offset = event.message.offset
-                        on_stream_event_out(
-                            tp, offset, self, event, sensor_state)
+                        on_stream_event_out(tp, offset, self, event, sensor_state)
                         if last_stream_to_ack:
                             on_message_out(tp, offset, message)
         except StopAsyncIteration:
