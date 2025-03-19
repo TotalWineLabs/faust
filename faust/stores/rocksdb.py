@@ -737,6 +737,20 @@ class Store(base.SerializedStore):
         # not work if the table name has dots in it (Issue #184).
         return path.with_name(f"{path.name}{suffix}")
 
+    def _prefix_scan(self, prefix: bytes) -> Iterator[Tuple[bytes, bytes]]:
+        if self.use_rocksdict:
+            read_options = rocksdict.ReadOptions()
+            read_options.set_prefix_same_as_start(True)        
+            for db in self._dbs_for_actives():
+                it = db.iter(read_options)
+                it.seek(prefix)
+                key = it.key()
+                while it.valid() and key.startswith(prefix) and key != self.offset_key:
+                    yield key, it.value()
+                    it.next()
+        else:
+            raise NotImplementedError("Prefix scan not supported in rocksdb driver.")
+        
     @property
     def path(self) -> Path:
         """Path to directory where tables are stored.
