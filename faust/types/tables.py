@@ -234,6 +234,10 @@ class CollectionT(ServiceT, JoinableT):
     def _windowed_contains(self, key: Any, timestamp: float) -> bool:
         ...
 
+    @abc.abstractmethod
+    def prefix_scan(self, prefix: Any) -> Iterator[Tuple[Any, Any]]:
+        ...        
+
 
 class TableT(CollectionT, ManagedUserDict[KT, VT]):
     ...
