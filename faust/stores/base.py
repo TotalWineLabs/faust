@@ -271,5 +271,11 @@ class SerializedStore(Store[KT, VT]):
         return self._del(self._encode_key(key), partition=partition)
     
     def prefix_scan(self, prefix: KT) -> Iterator[Tuple[KT, VT]]:
-        for key, value in self._prefix_scan(self._encode_key(prefix)):
-            yield self._decode_key(key), self._decode_value(value)
+        # json serializer wraps prefix value in quotes
+        # we truncate the last quote character to ensure the prefix is matched
+        if self.key_serializer == 'json':
+            _prefix = self._encode_key(prefix)[:-1]
+        else:
+            _prefix = self._encode_key(prefix)
+        for key, value in self._prefix_scan(_prefix):
+            yield self._decode_key(key), self._decode_value(value)    
