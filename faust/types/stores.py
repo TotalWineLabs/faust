@@ -9,6 +9,8 @@ from typing import (
     Set,
     TypeVar,
     Union,
+    Iterator,
+    Tuple
 )
 
 from mode import ServiceT
@@ -95,4 +97,8 @@ class StoreT(ServiceT, FastUserDict[KT, VT]):
     async def on_recovery_completed(self,
                                     active_tps: Set[TP],
                                     standby_tps: Set[TP]) -> None:
+        ...
+
+    @abc.abstractmethod
+    def prefix_scan(self, prefix: KT) -> Iterator[Tuple[KT, VT]]:
         ...

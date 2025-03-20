@@ -1,4 +1,5 @@
 """RocksDB storage."""
+
 import asyncio
 import gc
 import math
@@ -47,6 +48,8 @@ DEFAULT_BLOCK_CACHE_SIZE = 2 * 1024**3
 DEFAULT_BLOCK_CACHE_COMPRESSED_SIZE = 500 * 1024**2
 DEFAULT_BLOOM_FILTER_SIZE = 3
 DEFAULT_SET_CACHE_INDEX_AND_FILTER_BLOCKS = False
+DEFAULT_PREFIX_EXTRACTOR_ENABLED = False
+DEFAULT_PREFIX_MAX_LENGTH = 12
 ERRORS_ROCKS_IO_ERROR = (
     Exception  # use general exception to avoid missing exception issues
 )
@@ -103,6 +106,8 @@ class RocksDBOptions:
     bloom_filter_size: int = DEFAULT_BLOOM_FILTER_SIZE
     set_cache_index_and_filter_blocks: bool = DEFAULT_SET_CACHE_INDEX_AND_FILTER_BLOCKS
     use_rocksdict: bool = USE_ROCKSDICT
+    prefix_extractor_enabled: bool = DEFAULT_PREFIX_EXTRACTOR_ENABLED
+    prefix_max_length: int = DEFAULT_PREFIX_MAX_LENGTH
     extra_options: Mapping
 
     def __init__(
@@ -116,6 +121,8 @@ class RocksDBOptions:
         bloom_filter_size: Optional[int] = None,
         set_cache_index_and_filter_blocks: Optional[bool] = None,
         use_rocksdict: Optional[bool] = None,
+        prefix_extractor_enabled: Optional[bool] = None,
+        prefix_max_length: Optional[int] = None,
         **kwargs: Any,
     ) -> None:
         if max_open_files is not None:
@@ -136,6 +143,10 @@ class RocksDBOptions:
             self.set_cache_index_and_filter_blocks = set_cache_index_and_filter_blocks
         if use_rocksdict is not None:
             self.use_rocksdict = use_rocksdict
+        if prefix_extractor_enabled is not None:
+            self.prefix_extractor_enabled = prefix_extractor_enabled
+        if prefix_max_length is not None:
+            self.prefix_max_length = prefix_max_length
         self.extra_options = kwargs
 
     def open(self, path: Path, *, read_only: bool = False) -> DB:
@@ -170,8 +181,17 @@ class RocksDBOptions:
             table_factory_options.set_index_type(
                 rocksdict.BlockBasedIndexType.binary_search()
             )
-            table_factory_options.set_cache_index_and_filter_blocks(self.set_cache_index_and_filter_blocks)
+            table_factory_options.set_cache_index_and_filter_blocks(
+                self.set_cache_index_and_filter_blocks
+            )
             db_options.set_block_based_table_factory(table_factory_options)
+            # prefix extraction enables some performance improvements
+            if self.prefix_extractor_enabled:
+                slice_transform = rocksdict.SliceTransform.create_max_len_prefix(
+                    self.prefix_max_length
+                )
+                db_options.set_prefix_extractor(slice_transform)
+
             return db_options
         else:
             return rocksdb.Options(
@@ -285,7 +305,7 @@ class Store(base.SerializedStore):
             )
         except OSError:
             self.log.warning(
-                f'Unable to create files in "{self._backup_path}",' f"disabling backups"
+                f'Unable to create files in "{self._backup_path}",disabling backups'
             )
         else:
             if rocksdb:
@@ -487,7 +507,7 @@ class Store(base.SerializedStore):
             else:
                 key_may_exist = db.key_may_exist(key)[0]
             return db.get(key) if key_may_exist else None
-        else:  
+        else:
             event = current_event()
             partition_from_message = (
                 event is not None
@@ -539,17 +559,18 @@ class Store(base.SerializedStore):
     def _del(self, key: bytes, partition: int = None) -> None:
         if partition is not None:
             db = self._db_for_partition(partition)
-            db.delete(key)    
+            db.delete(key)
         else:
             for db in self._dbs_for_key(key):
                 db.delete(key)
 
-
-    async def on_rebalance(self,
-                           table: CollectionT,
-                           assigned: Set[TP],
-                           revoked: Set[TP],
-                           newly_assigned: Set[TP]) -> None:
+    async def on_rebalance(
+        self,
+        table: CollectionT,
+        assigned: Set[TP],
+        revoked: Set[TP],
+        newly_assigned: Set[TP],
+    ) -> None:
         """Rebalance occurred.
 
         Arguments:
@@ -601,10 +622,7 @@ class Store(base.SerializedStore):
                 await asyncio.sleep(0)
 
     async def _try_open_db_for_partition(
-        self,
-        partition: int,
-        max_retries: int = 30,
-        retry_delay: float = 1.0
+        self, partition: int, max_retries: int = 30, retry_delay: float = 1.0
     ) -> DB:
         for i in range(max_retries):
             try:
@@ -736,6 +754,35 @@ class Store(base.SerializedStore):
         # Path.with_suffix should not be used as this will
         # not work if the table name has dots in it (Issue #184).
         return path.with_name(f"{path.name}{suffix}")
+
+    def _prefix_scan(self, prefix: bytes) -> Iterator[Tuple[bytes, bytes]]:
+        if (
+            self.rocksdb_options.prefix_extractor_enabled
+            and len(prefix) > self.rocksdb_options.prefix_max_length
+        ):
+            raise ValueError(
+                f"Prefix length {len(prefix)} exceeds max length "
+                f"{self.rocksdb_options.prefix_max_length} "
+                f"Increase the prefix_max_length option."
+            )
+
+        if self.use_rocksdict:
+            read_options = rocksdict.ReadOptions()
+            read_options.set_prefix_same_as_start(True)
+            for db in self._dbs_for_actives():
+                it = db.iter(read_options)
+                it.seek(prefix)
+                while it.valid():
+                    key = it.key()
+                    if not key.startswith(prefix):
+                        break
+                    if key != self.offset_key:
+                        yield key, it.value()
+                    it.next()
+        else:
+            raise NotImplementedError(
+                "Prefix scan is not supported for this store driver."
+            )
 
     @property
     def path(self) -> Path:

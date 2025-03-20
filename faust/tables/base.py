@@ -585,6 +585,10 @@ class Collection(Service, CollectionT):
         if self._on_changelog_event:
             await self._on_changelog_event(event)
 
+    def prefix_scan(self, prefix: Any) -> Iterator[Tuple[Any, Any]]:
+        """Scan table for keys matching a prefix."""
+        yield from self.data.prefix_scan(prefix)
+        
     @property
     def label(self) -> str:
         """Return human-readable label used to represent this table."""
