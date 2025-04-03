@@ -440,6 +440,7 @@ class Recovery(Service):
 
                         
                 if self.need_recovery():
+                    self._set_recovery_started()
                     self.log.info('Restoring state from changelog topics...')
                     if active_tps:
                         T(consumer.resume_partitions)(active_tps)
