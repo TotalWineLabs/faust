@@ -606,7 +606,7 @@ class Recovery(Service):
         self.log.dev('Resume stream partitions')
         consumer.resume_partitions({
             tp for tp in assignment
-            if not self._is_changelog_tp(tp)
+            if self._is_global_table_tp(tp) or not self._is_changelog_tp(tp)
         })
         # finally make sure the fetcher is running.
         await cast(_App, self.app)._fetcher.maybe_start()
@@ -1032,3 +1032,7 @@ class Recovery(Service):
 
     def _is_changelog_tp(self, tp: TP) -> bool:
         return tp.topic in self.tables.changelog_topics
+
+    def _is_global_table_tp(self, tp: TP) -> bool:
+        return tp.topic in self.tables._changelogs \
+            and self.tables._changelogs[tp.topic].is_global
