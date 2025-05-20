@@ -1254,7 +1254,7 @@ and can be used as a template for your own partitioner:
 
    import random
    from typing import List
-   from kafka.partitioner.hashed import murmur2
+   from aiokafka.partitioner.hashed import murmur2
 
    def partition(key: bytes,
                all_partitions: List[int],
