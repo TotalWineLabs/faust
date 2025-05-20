@@ -456,12 +456,6 @@ class Producer(base.Producer):
             self, loop=self.loop, beacon=self.beacon)
         self._quick_produce = self._producer_thread.produce
 
-    async def _on_irrecoverable_error(self, exc: BaseException) -> None:
-        consumer = self.transport.app.consumer
-        if consumer is not None:
-            await consumer.crash(exc)
-        await self.crash(exc)
-
     async def on_restart(self) -> None:
         """Call when producer is restarting."""
         self.on_init()

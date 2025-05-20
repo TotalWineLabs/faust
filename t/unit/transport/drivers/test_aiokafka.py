@@ -1371,7 +1371,6 @@ class test_Producer:
                 security_protocol=security_protocol,
                 loop=producer.loop,
                 partitioner=producer.partitioner,
-                on_irrecoverable_error=producer._on_irrecoverable_error,
                 **kwargs,
             )
 
@@ -1389,19 +1388,6 @@ class test_Producer:
         assert producer._producer_type is aiokafka.MultiTXNProducer
         app.in_transaction = False
         assert producer._producer_type is aiokafka.AIOKafkaProducer
-
-    @pytest.mark.asyncio
-    async def test__on_irrecoverable_error(self, *, producer):
-        exc = KeyError()
-        producer.crash = AsyncMock()
-        app = producer.transport.app
-        app.consumer = None
-        await producer._on_irrecoverable_error(exc)
-        producer.crash.assert_called_once_with(exc)
-        app.consumer = Mock(name='consumer')
-        app.consumer.crash = AsyncMock()
-        await producer._on_irrecoverable_error(exc)
-        app.consumer.crash.assert_called_once_with(exc)
 
     @pytest.mark.asyncio
     async def test_create_topic(self, *, producer, _producer):

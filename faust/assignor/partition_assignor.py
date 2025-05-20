@@ -12,10 +12,9 @@ from typing import (
     Set,
     cast,
 )
-
-from kafka.cluster import ClusterMetadata
-from kafka.coordinator.assignors.abstract import AbstractPartitionAssignor
-from kafka.coordinator.protocol import (
+from aiokafka.cluster import ClusterMetadata
+from aiokafka.coordinator.assignors.abstract import AbstractPartitionAssignor
+from aiokafka.coordinator.protocol import (
     ConsumerProtocolMemberAssignment,
     ConsumerProtocolMemberMetadata,
 )
