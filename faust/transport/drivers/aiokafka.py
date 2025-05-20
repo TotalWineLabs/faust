@@ -1,6 +1,10 @@
 """Message transport using :pypi:`aiokafka`."""
 import asyncio
 import typing
+import abc
+import sys
+import traceback
+import warnings
 
 from collections import deque
 from time import monotonic
@@ -30,20 +34,20 @@ from aiokafka.errors import (
     ConsumerStoppedError,
     IllegalStateError,
     KafkaError,
+    NotControllerError,
+    TopicAlreadyExistsError as TopicExistsError,
+    for_code,
 )
 from aiokafka.structs import (
     OffsetAndMetadata,
     TopicPartition as _TopicPartition,
 )
 from aiokafka.util import parse_kafka_version
-from kafka.errors import (
-    NotControllerError,
-    TopicAlreadyExistsError as TopicExistsError,
-    for_code,
-)
-from kafka.partitioner.default import DefaultPartitioner
-from kafka.partitioner.hashed import murmur2
-from kafka.protocol.metadata import MetadataRequest_v1
+from aiokafka import TopicPartition
+from aiokafka.coordinator.assignors.roundrobin import RoundRobinPartitionAssignor
+from aiokafka.partitioner import DefaultPartitioner, murmur2
+from aiokafka.protocol.admin import CreateTopicsRequest
+from aiokafka.protocol.metadata import MetadataRequest_v1
 from mode import Service, get_logger
 from mode.utils.futures import StampedeWrapper
 from mode.utils.objects import cached_property
@@ -78,18 +82,38 @@ from faust.types.transports import (
     PartitionerT,
     ProducerT,
 )
-from faust.utils.kafka.protocol.admin import CreateTopicsRequest
 from faust.utils.tracing import (
     noop_span,
     set_current_span,
     traced_from_parent_span,
 )
 
-__all__ = ['Consumer', 'Producer', 'Transport']
+from aiokafka.client import AIOKafkaClient
+from aiokafka.codec import has_gzip, has_lz4, has_snappy, has_zstd
+from aiokafka.errors import (
+    IllegalOperation,
+    MessageSizeTooLargeError,
+    UnsupportedVersionError,
+)
 
-if not hasattr(aiokafka, '__robinhood__'):  # pragma: no cover
-    raise RuntimeError(
-        'Please install robinhood-aiokafka, not aiokafka')
+from aiokafka.record.default_records import DefaultRecordBatch
+from aiokafka.record.legacy_records import LegacyRecordBatchBuilder
+from aiokafka.util import (
+    commit_structure_validate,
+    create_task,
+    get_running_loop,
+)
+
+from aiokafka.producer.message_accumulator import MessageAccumulator
+from aiokafka.producer.sender import Sender
+from aiokafka.producer.transaction_manager import TransactionManager
+from aiokafka.producer import AIOKafkaProducer
+
+_DEFAULT_PARTITIONER = DefaultPartitioner
+
+_missing = object()
+
+__all__ = ['Consumer', 'Producer', 'Transport']
 
 logger = get_logger(__name__)
 
@@ -325,7 +349,11 @@ class AIOKafkaConsumerThread(ConsumerThread):
         conf = self.app.conf
         if self.consumer.in_transaction:
             isolation_level = 'read_committed'
-        self._assignor = self.app.assignor
+        self._assignor = (
+            self.app.assignor
+            if self.app.conf.table_standby_replicas > 0
+            else RoundRobinPartitionAssignor
+        )
         auth_settings = credentials_to_aiokafka_auth(
             conf.broker_credentials, conf.ssl_context)
         max_poll_interval = conf.broker_max_poll_interval or 0
@@ -360,11 +388,6 @@ class AIOKafkaConsumerThread(ConsumerThread):
             rebalance_timeout_ms=int(rebalance_timeout * 1000.0),
             heartbeat_interval_ms=int(conf.broker_heartbeat_interval * 1000.0),
             isolation_level=isolation_level,
-            traced_from_parent_span=self.traced_from_parent_span,
-            start_rebalancing_span=self.start_rebalancing_span,
-            start_coordinator_span=self.start_coordinator_span,
-            on_generation_id_known=self.on_generation_id_known,
-            flush_spans=self.flush_spans,
             **auth_settings,
         )
 
@@ -377,10 +400,8 @@ class AIOKafkaConsumerThread(ConsumerThread):
             conf.broker_credentials, conf.ssl_context)
         max_poll_interval = conf.broker_max_poll_interval or 0
         return aiokafka.AIOKafkaConsumer(
-            loop=loop,
             client_id=conf.broker_client_id,
-            bootstrap_servers=server_list(
-                transport.url, transport.default_port),
+            bootstrap_servers=server_list(transport.url, transport.default_port),
             request_timeout_ms=int(conf.broker_request_timeout * 1000.0),
             enable_auto_commit=True,
             max_poll_records=conf.broker_max_poll_records,
@@ -501,8 +522,13 @@ class AIOKafkaConsumerThread(ConsumerThread):
     def close(self) -> None:
         """Close consumer for graceful shutdown."""
         if self._consumer is not None:
-            self._consumer.set_close()
-            self._consumer._coordinator.set_close()
+            self._consumer._closed = True
+            asyncio.run_coroutine_threadsafe(
+                self._consumer._client.close(), self.app.loop
+            )
+            asyncio.run_coroutine_threadsafe(
+                self._consumer._coordinator.close(), self.app.loop
+            )            
 
     async def subscribe(self, topics: Iterable[str]) -> None:
         """Reset subscription (requires rebalance)."""
@@ -538,7 +564,7 @@ class AIOKafkaConsumerThread(ConsumerThread):
         except CommitFailedError as exc:
             if 'already rebalanced' in str(exc):
                 return False
-            self.log.exception(f'Committing raised exception: %r', exc)
+            self.log.exception('Committing raised exception: %r', exc)
             await self.crash(exc)
             return False
         except IllegalStateError as exc:
@@ -631,32 +657,28 @@ class AIOKafkaConsumerThread(ConsumerThread):
 
         Returns :const:`True` if any error was logged.
         """
-        parent = cast(Consumer, self.consumer)
         consumer = self._ensure_consumer()
         secs_since_started = now - self.time_started
-        aiotp = parent._new_topicpartition(tp.topic, tp.partition)
-
-        request_at = consumer.records_last_request.get(aiotp)
-        if request_at is None:
+        aiotp = TopicPartition(tp.topic, tp.partition)
+        assignment = consumer._fetcher._subscriptions.subscription.assignment
+        if not assignment or not assignment.active:
+            self.log.error(f"No active partitions for {tp}")
+            return True
+        poll_at = None
+        aiotp_state = assignment.state_value(aiotp)
+        if aiotp_state and aiotp_state.timestamp:
+            poll_at = aiotp_state.timestamp / 1000  # milliseconds
+        if poll_at is None:
             if secs_since_started >= self.tp_fetch_request_timeout_secs:
                 # NO FETCH REQUEST SENT AT ALL SINCE WORKER START
                 self.log.error(
                     SLOW_PROCESSING_NO_FETCH_SINCE_START,
-                    tp, humanize_seconds_ago(secs_since_started),
+                    tp,
+                    humanize_seconds_ago(secs_since_started),
                 )
             return True
 
-        response_at = consumer.records_last_response.get(aiotp)
-        if response_at is None:
-            if secs_since_started >= self.tp_fetch_response_timeout_secs:
-                # NO FETCH RESPONSE RECEIVED AT ALL SINCE WORKER START
-                self.log.error(
-                    SLOW_PROCESSING_NO_RESPONSE_SINCE_START,
-                    tp, humanize_seconds_ago(secs_since_started),
-                )
-            return True
-
-        secs_since_request = now - request_at
+        secs_since_request = now - poll_at
         if secs_since_request >= self.tp_fetch_request_timeout_secs:
             # NO REQUEST SENT BY AIOKAFKA IN THE LAST n SECONDS
             self.log.error(
@@ -666,15 +688,6 @@ class AIOKafkaConsumerThread(ConsumerThread):
             )
             return True
 
-        secs_since_response = now - response_at
-        if secs_since_response >= self.tp_fetch_response_timeout_secs:
-            # NO RESPONSE RECEIVED FROM KAKFA IN THE LAST n SECONDS
-            self.log.error(
-                SLOW_PROCESSING_NO_RECENT_RESPONSE,
-                tp,
-                humanize_seconds_ago(secs_since_response),
-            )
-            return True
         return False
 
     def _log_slow_processing_stream(self, msg: str, *args: Any) -> None:
@@ -825,7 +838,7 @@ class AIOKafkaConsumerThread(ConsumerThread):
                 active_partitions,
                 timeout=timeout,
                 max_records=max_records,
-            )
+            )      
 
     async def create_topic(self,
                            topic: str,
@@ -882,6 +895,601 @@ class AIOKafkaConsumerThread(ConsumerThread):
         return self._partitioner(key, all_partitions, available)
 
 
+class BaseProducer(abc.ABC):
+
+    log = logger
+
+    _PRODUCER_CLIENT_ID_SEQUENCE = 0
+
+    _COMPRESSORS = {
+        "gzip": (has_gzip, DefaultRecordBatch.CODEC_GZIP),
+        "snappy": (has_snappy, DefaultRecordBatch.CODEC_SNAPPY),
+        "lz4": (has_lz4, DefaultRecordBatch.CODEC_LZ4),
+        "zstd": (has_zstd, DefaultRecordBatch.CODEC_ZSTD),
+    }
+
+    _closed = None  # Serves as an uninitialized flag for __del__
+    _source_traceback = None
+
+    def __init__(self, 
+                 *, 
+                 loop, 
+                 bootstrap_servers='localhost',
+                 client_id=None,
+                 metadata_max_age_ms=300000, 
+                 request_timeout_ms=40000,
+                 api_version='auto', 
+                 acks=_missing,
+                 key_serializer=None, 
+                 value_serializer=None,
+                 compression_type=None, 
+                 max_batch_size=16384,
+                 partitioner=_DEFAULT_PARTITIONER, 
+                 max_request_size=1048576,
+                 linger_ms=0, 
+                 retry_backoff_ms=100, 
+                 security_protocol="PLAINTEXT",
+                 ssl_context=None, 
+                 connections_max_idle_ms=540000,
+                 enable_idempotence=False, 
+                 transactional_id=None,
+                 transaction_timeout_ms=60000, 
+                 sasl_mechanism="PLAIN",
+                 sasl_plain_password=None, 
+                 sasl_plain_username=None,
+                 sasl_kerberos_service_name='kafka',
+                 sasl_kerberos_domain_name=None,
+                 sasl_oauth_token_provider=None
+    ):
+        
+        if loop is None:
+            loop = get_running_loop()
+        else:
+            warnings.warn(
+                "The loop argument is deprecated since 0.7.1, "
+                "and scheduled for removal in 0.9.0",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if loop.get_debug():
+            self._source_traceback = traceback.extract_stack(sys._getframe(1))
+        self._loop = loop
+                
+        if acks not in (0, 1, -1, 'all', _missing):
+            raise ValueError("Invalid ACKS parameter")
+        if compression_type not in ('gzip', 'snappy', 'lz4', None):
+            raise ValueError("Invalid compression type!")
+        if compression_type:
+            checker, compression_attrs = self._COMPRESSORS[compression_type]
+            if not checker():
+                raise RuntimeError("Compression library for {} not found"
+                                   .format(compression_type))
+        else:
+            compression_attrs = 0
+        self._compression_attrs = compression_attrs
+
+        if acks is _missing:
+            acks = 1
+        elif acks == 'all':
+            acks = -1
+
+        AIOKafkaProducer._PRODUCER_CLIENT_ID_SEQUENCE += 1
+        if client_id is None:
+            client_id = 'aiokafka-producer-%s' % \
+                AIOKafkaProducer._PRODUCER_CLIENT_ID_SEQUENCE
+            
+        self._bootstrap_servers = bootstrap_servers
+        self._client_id = client_id
+        self._metadata_max_age_ms = metadata_max_age_ms
+        self._request_timeout_ms = request_timeout_ms
+        self._api_version = api_version
+        self._acks = acks
+        self._key_serializer = key_serializer
+        self._value_serializer = value_serializer
+        self._compression_type = compression_type
+        self._max_batch_size = max_batch_size
+        self._partitioner = partitioner
+        self._max_request_size = max_request_size
+        self._linger_ms = linger_ms
+        self._retry_backoff_ms = retry_backoff_ms
+        self._security_protocol = security_protocol
+        self._ssl_context = ssl_context
+        self._connections_max_idle_ms = connections_max_idle_ms
+        self._transaction_timeout_ms = transaction_timeout_ms
+        self._transaction_timeout_ms = transaction_timeout_ms
+        self._sasl_mechanism = sasl_mechanism
+        self._sasl_plain_username = sasl_plain_username
+        self._sasl_plain_password = sasl_plain_password
+        self._sasl_kerberos_service_name = sasl_kerberos_service_name
+        self._sasl_kerberos_domain_name = sasl_kerberos_domain_name
+
+        self.client = AIOKafkaClient(
+            loop=loop, 
+            bootstrap_servers=bootstrap_servers,
+            client_id=client_id, 
+            metadata_max_age_ms=metadata_max_age_ms,
+            request_timeout_ms=request_timeout_ms,
+            retry_backoff_ms=retry_backoff_ms,
+            api_version=api_version, 
+            security_protocol=security_protocol,
+            ssl_context=ssl_context,
+            connections_max_idle_ms=connections_max_idle_ms,
+            sasl_mechanism=sasl_mechanism,
+            sasl_plain_username=sasl_plain_username,
+            sasl_plain_password=sasl_plain_password,
+            sasl_kerberos_service_name=sasl_kerberos_service_name,
+            sasl_kerberos_domain_name=sasl_kerberos_domain_name,
+            sasl_oauth_token_provider=sasl_oauth_token_provider,
+        )
+        self._metadata = self.client.cluster
+        self._closed = False
+
+    # Warn if producer was not closed properly
+    # We don't attempt to close the Consumer, as __del__ is synchronous
+    def __del__(self, _warnings=warnings):
+        if self._closed is False:
+            _warnings.warn(
+                f"Unclosed AIOKafkaProducer {self!r}",
+                ResourceWarning,
+                source=self,
+            )
+            context = {
+                "producer": self,
+                "message": "Unclosed AIOKafkaProducer",
+            }
+            if self._source_traceback is not None:
+                context["source_traceback"] = self._source_traceback
+            self._loop.call_exception_handler(context)
+
+    @abc.abstractmethod
+    def _on_set_api_version(self, api_version):
+        ...
+
+    @abc.abstractmethod
+    def _message_accumulator_for(self, transactional_id, tp):
+        ...
+
+    @abc.abstractmethod
+    def _transactional_id_or_default(self, transactional_id):
+        ...
+
+    @abc.abstractmethod
+    def _verify_txn_started(self, transactional_id):
+        ...
+
+    @abc.abstractmethod
+    def _wait_for_sender(self):
+        ...
+
+    @abc.abstractmethod
+    def _ensure_transactional(self):
+        ...
+
+    async def __aenter__(self):
+        await self.start()
+        return self
+
+    async def __aexit__(self, type, value, traceback):
+        await self.stop()
+
+    async def start(self):
+        """Connect to Kafka cluster and check server version"""
+        self.log.debug("Starting the Kafka producer")  # trace
+        await self.client.bootstrap()
+        if self._closed:
+            return
+        api_version = self.client.api_version
+
+        self._verify_api_version(api_version)
+        await self._start_sender()
+        self._on_set_api_version(api_version)
+
+        self._producer_magic = 0 if api_version < (0, 10) else 1
+        self.log.debug("Kafka producer started")
+
+    def _verify_api_version(self, api_version):
+        if self._compression_type == "lz4":
+            assert self.client.api_version >= (0, 8, 2), (
+                "LZ4 Requires >= Kafka 0.8.2 Brokers"
+            )  # fmt: skip
+        elif self._compression_type == "zstd":
+            assert self.client.api_version >= (2, 1, 0), (
+                "Zstd Requires >= Kafka 2.1.0 Brokers"
+            )  # fmt: skip
+
+    async def stop(self):
+        """Flush all pending data and close all connections to kafka cluster"""
+        if self._closed:
+            return
+        self._closed = True
+
+        await self._wait_for_sender()
+
+        await self.client.close()
+        self.log.debug("The Kafka producer has closed.")
+
+    async def partitions_for(self, topic):
+        """Returns set of all known partitions for the topic."""
+        return await self.client._wait_on_metadata(topic)
+
+    def _serialize(self, topic, key, value):
+        if self._key_serializer:
+            serialized_key = self._key_serializer(key)
+        else:
+            serialized_key = key
+        if self._value_serializer:
+            serialized_value = self._value_serializer(value)
+        else:
+            serialized_value = value
+
+        message_size = LegacyRecordBatchBuilder.record_overhead(
+            self._producer_magic)
+        if serialized_key is not None:
+            message_size += len(serialized_key)
+        if serialized_value is not None:
+            message_size += len(serialized_value)
+        if message_size > self._max_request_size:
+            raise MessageSizeTooLargeError(
+                "The message is %d bytes when serialized which is larger than"
+                " the maximum request size you have configured with the"
+                " max_request_size configuration" % message_size)
+
+        return serialized_key, serialized_value
+
+    def _partition(self, topic, partition, key, value,
+                   serialized_key, serialized_value):
+        if partition is not None:
+            assert partition >= 0
+            assert partition in self._metadata.partitions_for_topic(topic), \
+                'Unrecognized partition'
+            return partition
+
+        all_partitions = list(self._metadata.partitions_for_topic(topic))
+        available = list(self._metadata.available_partitions_for_topic(topic))
+        return self._partitioner(
+            serialized_key, all_partitions, available)
+
+    async def send(
+        self, topic, value=None, key=None, partition=None,
+        timestamp_ms=None, headers=None, transactional_id=None
+    ):
+        """Publish a message to a topic.
+
+        Arguments:
+            topic (str): topic where the message will be published
+            value (optional): message value. Must be type bytes, or be
+                serializable to bytes via configured value_serializer. If value
+                is None, key is required and message acts as a 'delete'.
+                See kafka compaction documentation for more details:
+                http://kafka.apache.org/documentation.html#compaction
+                (compaction requires kafka >= 0.8.1)
+            partition (int, optional): optionally specify a partition. If not
+                set, the partition will be selected using the configured
+                'partitioner'.
+            key (optional): a key to associate with the message. Can be used to
+                determine which partition to send the message to. If partition
+                is None (and producer's partitioner config is left as default),
+                then messages with the same key will be delivered to the same
+                partition (but if key is None, partition is chosen randomly).
+                Must be type bytes, or be serializable to bytes via configured
+                key_serializer.
+            timestamp_ms (int, optional): epoch milliseconds (from Jan 1 1970
+                UTC) to use as the message timestamp. Defaults to current time.
+
+        Returns:
+            asyncio.Future: object that will be set when message is
+            processed
+
+        Raises:
+            kafka.KafkaTimeoutError: if we can't schedule this record (
+                pending buffer is full) in up to `request_timeout_ms`
+                milliseconds.
+
+        Note:
+            The returned future will wait based on `request_timeout_ms`
+            setting. Cancelling the returned future **will not** stop event
+            from being sent, but cancelling the ``send`` coroutine itself
+            **will**.
+        """
+        assert value is not None or self.client.api_version >= (0, 8, 1), (
+            'Null messages require kafka >= 0.8.1')
+        assert not (value is None and key is None), \
+            'Need at least one: key or value'
+        transactional_id = self._transactional_id_or_default(transactional_id)
+
+        # first make sure the metadata for the topic is available
+        await self.client._wait_on_metadata(topic)
+
+        # Ensure transaction is started and not committing
+        self._verify_txn_started(transactional_id)
+
+        if headers is not None:
+            if self.client.api_version < (0, 11):
+                raise UnsupportedVersionError(
+                    "Headers not supported before Kafka 0.11")
+        else:
+            # Record parser/builder support only list type, no explicit None
+            headers = []
+
+        key_bytes, value_bytes = self._serialize(topic, key, value)
+        partition = self._partition(topic, partition, key, value,
+                                    key_bytes, value_bytes)
+
+        tp = TopicPartition(topic, partition)
+        self.log.debug("Sending (key=%s value=%s) to %s", key, value, tp)
+
+        message_accumulator = self._message_accumulator_for(
+            transactional_id, tp)
+        fut = await message_accumulator.add_message(
+            tp, key_bytes, value_bytes, self._request_timeout_ms / 1000,
+            timestamp_ms=timestamp_ms, headers=headers)
+        return fut
+
+    async def send_and_wait(self, topic, value=None, key=None, partition=None,
+                      timestamp_ms=None):
+        """Publish a message to a topic and wait the result"""
+        future = await self.send(
+            topic, value, key, partition, timestamp_ms)
+        return (await future)
+    
+class MultiTXNProducer(BaseProducer):
+    """Kafka producer using :pypi:`aiokafka` with support for multi-transactions."""
+
+    _transactions: MutableMapping[str, TransactionManager]
+    _accumulators: MutableMapping[str, MessageAccumulator]
+    _senders: MutableMapping[str, Sender]
+    _received_api_version: str = None
+
+    def __init__(self, *,
+                 loop,
+                 bootstrap_servers='localhost',
+                 acks=_missing,
+                 enable_idempotence=False,
+                 transactional_id=None,
+                 transaction_timeout_ms=60000,
+                 **kwargs):
+        if acks is _missing:
+            acks = -1
+        elif acks not in ('all', -1):
+            raise ValueError(
+                "acks={} not supported with MultiTXNProducer"
+                .format(acks))
+
+        super().__init__(
+            loop=loop,
+            bootstrap_servers=bootstrap_servers,
+            acks=acks,
+            transaction_timeout_ms=transaction_timeout_ms,
+            **kwargs,
+        )
+        self._transactions = {}
+        self._accumulators = {}
+        self._senders = {}
+
+        self._message_accumulator = MessageAccumulator(
+            self._metadata, 
+            self._max_batch_size, 
+            self._compression_attrs,
+            self._request_timeout_ms / 1000,
+            txn_manager=None,
+            loop=self._loop)
+
+        self._sender = Sender(
+            self.client,
+            txn_manager=None,
+            acks=self._acks,
+            retry_backoff_ms=self._retry_backoff_ms,
+            linger_ms=self._linger_ms,
+            message_accumulator=self._message_accumulator,
+            request_timeout_ms=self._request_timeout_ms,
+        )
+
+    async def commit(
+        self,
+        tid_to_offset_map: Mapping[str, Mapping[TopicPartition, int]],
+        group_id: str,
+        start_new_transaction: bool = True
+    ) -> None:
+        for transactional_id, offsets in tid_to_offset_map.items():
+            self.log.debug('+COMMIT %r %r' % (transactional_id, offsets))
+            await self._commit(
+                transactional_id, offsets, group_id,
+                start_new_transaction=start_new_transaction,
+            )
+            self.log.debug('-COMMIT %r %r' % (transactional_id, offsets))
+
+    async def _commit(
+        self, transactional_id, offsets: Mapping[TopicPartition, int],
+        group_id: str,
+        start_new_transaction: bool = True
+    ) -> None:
+        self.log.debug('+send offsets to transaction %r' % (transactional_id,))
+        await self.send_offsets_to_transaction(
+            transactional_id, offsets, group_id)
+        self.log.debug('-send offsets to transaction %r' % (transactional_id,))
+        self.log.debug('+commit transaction %r' % (transactional_id,))
+        await self.commit_transaction(transactional_id)
+        self.log.debug('-commit transaction %r' % (transactional_id,))
+        if start_new_transaction:
+            self.log.debug('+start new transaction %r' % (transactional_id,))
+            await self.begin_transaction(transactional_id)
+            self.log.debug('-start new transaction %r' % (transactional_id,))
+
+    def _on_set_api_version(self, api_version):
+        self._received_api_version = api_version
+        for accumulator in self._accumulators.values():
+            accumulator.set_api_version(api_version)
+        self._message_accumulator.set_api_version(api_version)
+
+    def _message_accumulator_for(self, transactional_id, tp):
+        if transactional_id is None:
+            return self._message_accumulator
+        return self._accumulators[transactional_id]
+
+    def _transactional_id_or_default(self, transactional_id):
+        return None
+
+    def _verify_txn_started(self, transactional_id):
+        try:
+            txn_manager = self._transactions[transactional_id]
+        except KeyError:
+            pass
+        else:
+            assert txn_manager.transactional_id == transactional_id
+            if not txn_manager.is_in_transaction():
+                raise IllegalOperation(
+                    "Can't send messages while not in transaction")
+
+    def _verify_api_version(self, api_version):
+        super()._verify_api_version(api_version)
+        if self.client.api_version < (0, 11):
+            raise UnsupportedVersionError(
+                "MultiTXNProducer available only for Broker version 0.11"
+                " and above")
+
+    async def flush(self):
+        """Wait untill all batches are Delivered and futures resolved"""
+        await asyncio.gather(
+            self._message_accumulator.flush(),
+            *[acc.flush() for acc in self._accumulators.values()],
+        )
+
+    async def _wait_for_sender(self):
+        senders = self._senders
+        accumulators = self._accumulators
+        await asyncio.gather(
+            self._wait_for_sender1(self._sender, self._message_accumulator),
+            *[self._wait_for_sender1(senders[transactional_id], accumulator)
+              for transactional_id, accumulator in accumulators.items()],
+        )
+
+    async def _wait_for_sender1(self, sender, accumulator):
+        # If the sender task is down there is no way for accumulator to flush
+        if sender is not None and sender.sender_task is not None:
+            await asyncio.wait(
+                [
+                    create_task(accumulator.close()),
+                    sender.sender_task,
+                ],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            await sender.close()
+
+    def _ensure_transactional(self):
+        ...
+
+    async def _start_sender(self):
+        await self._sender.start()
+
+    async def _init_transaction(self, tid):
+        txn_manager = self._transactions[tid] = TransactionManager(
+            tid, self._transaction_timeout_ms,
+        )
+        accumulator = self._accumulators[tid] = MessageAccumulator(
+            self._metadata,
+            self._max_batch_size,
+            self._compression_attrs,
+            self._request_timeout_ms / 1000,
+            txn_manager=txn_manager,
+            loop=self._loop,
+        )
+        accumulator.set_api_version(self._received_api_version)
+        sender = self._senders[tid] = Sender(
+            self.client,
+            acks=self._acks,
+            txn_manager=txn_manager,
+            retry_backoff_ms=self._retry_backoff_ms,
+            linger_ms=self._linger_ms,
+            message_accumulator=accumulator,
+            request_timeout_ms=self._request_timeout_ms,
+        )
+        await sender.start()
+        return txn_manager
+
+    async def begin_transaction(self, transactional_id):
+        self.log.debug(
+            "Beginning a new transaction for id %s", transactional_id)
+        txn_manager = self._transactions.get(transactional_id)
+        if txn_manager is None:
+            txn_manager = await self._init_transaction(transactional_id)
+
+        await asyncio.shield(
+            txn_manager.wait_for_pid(),
+            loop=self._loop,
+        )
+        txn_manager.begin_transaction()
+
+    async def commit_transaction(self, transactional_id):
+        self.log.debug(
+            "Committing transaction for id %s", transactional_id)
+        txn_manager = self._transactions[transactional_id]
+        txn_manager.committing_transaction()
+        await asyncio.shield(
+            txn_manager.wait_for_transaction_end(),
+            loop=self._loop,
+        )
+
+    async def abort_transaction(self, transactional_id):
+        self.log.debug(
+            "Aborting transaction for id %s", transactional_id)
+        txn_manager = self._transactions[transactional_id]
+        txn_manager.aborting_transaction()
+        await asyncio.shield(
+            txn_manager.wait_for_transaction_end(),
+            loop=self._loop,
+        )
+
+    async def stop_transaction(self, transactional_id):
+        txn_manager = self._transactions.pop(transactional_id, None)
+        accumulator = self._accumulators.pop(transactional_id, None)
+        sender = self._senders.pop(transactional_id, None)
+        if txn_manager is not None:
+            if txn_manager.is_in_transaction():
+                txn_manager.aborting_transaction()
+                await asyncio.shield(
+                    txn_manager.wait_for_transaction_end(),
+                    loop=self._loop,
+                )
+        await self._wait_for_sender1(sender, accumulator)
+
+    async def maybe_begin_transaction(self, transactional_id):
+        txn_manager = self._transactions.get(transactional_id)
+        if txn_manager is None:
+            txn_manager = await self._init_transaction(transactional_id)
+        else:
+            if txn_manager.is_in_transaction():
+                return
+        self.log.debug(
+            "Beginning a new transaction for id %s", transactional_id)
+        await asyncio.shield(
+            txn_manager.wait_for_pid(),
+            loop=self._loop,
+        )
+        txn_manager.begin_transaction()
+
+    async def send_offsets_to_transaction(
+        self, transactional_id, offsets, group_id
+    ):
+        txn_manager = self._transactions[transactional_id]
+        if not txn_manager.is_in_transaction():
+            raise IllegalOperation("Not in the middle of a transaction")
+
+        if not group_id or not isinstance(group_id, str):
+            raise ValueError(group_id)
+
+        # validate `offsets` structure
+        formatted_offsets = commit_structure_validate(offsets)
+
+        self.log.debug(
+            "Begin adding offsets %s for consumer group %s to transaction",
+            formatted_offsets, group_id)
+        fut = txn_manager.add_offsets_to_txn(formatted_offsets, group_id)
+        self.log.debug('+WAIT FOR RESPONSE OR ERROR %r' % (fut,))
+        await asyncio.shield(fut, loop=self._loop)
+        self.log.debug('-WAIT FOR RESPONSE OR ERROR %r' % (fut,))
+
+
 class Producer(base.Producer):
     """Kafka producer using :pypi:`aiokafka`."""
 
@@ -910,7 +1518,6 @@ class Producer(base.Producer):
             'max_batch_size': self.max_batch_size,
             'max_request_size': self.max_request_size,
             'compression_type': self.compression_type,
-            'on_irrecoverable_error': self._on_irrecoverable_error,
             'security_protocol': 'SSL' if self.ssl_context else 'PLAINTEXT',
             'partitioner': self.partitioner,
             'request_timeout_ms': int(self.request_timeout * 1000),
@@ -966,17 +1573,10 @@ class Producer(base.Producer):
         )
 
     @property
-    def _producer_type(self) -> Type[aiokafka.BaseProducer]:
+    def _producer_type(self) -> Type[BaseProducer]:
         if self.app.in_transaction:
-            return aiokafka.MultiTXNProducer
+            return MultiTXNProducer
         return aiokafka.AIOKafkaProducer
-
-    async def _on_irrecoverable_error(self, exc: BaseException) -> None:
-        consumer = self.transport.app.consumer
-        if consumer is not None:  # pragma: no cover
-            # coverage executes this line, but does not mark as covered.
-            await consumer.crash(exc)
-        await self.crash(exc)
 
     async def create_topic(self,
                            topic: str,
@@ -1008,7 +1608,7 @@ class Producer(base.Producer):
         )
         await producer.client.force_metadata_update()  # Fixes #499
 
-    def _ensure_producer(self) -> aiokafka.BaseProducer:
+    def _ensure_producer(self) -> BaseProducer:
         if self._producer is None:
             raise NotReady('Producer service not yet started')
         return self._producer
@@ -1181,11 +1781,11 @@ class Transport(base.Transport):
                 timeout=timeout,
             )
             if wait_result.stopped:
-                owner.log.info(f'Shutting down - skipping creation.')
+                owner.log.info('Shutting down - skipping creation.')
                 return None
             response = wait_result.result
             return response.controller_id
-        raise Exception(f'Controller node not found')
+        raise Exception('Controller node not found')
 
     async def _really_create_topic(
             self,
@@ -1233,7 +1833,7 @@ class Transport(base.Transport):
             timeout=timeout,
         )
         if wait_result.stopped:
-            owner.log.debug(f'Shutting down - skipping creation.')
+            owner.log.debug('Shutting down - skipping creation.')
             return
         response = wait_result.result
 
