@@ -408,6 +408,7 @@ class Settings(abc.ABC):
     producer_max_batch_size: int = PRODUCER_MAX_BATCH_SIZE
     producer_acks: int = PRODUCER_ACKS
     producer_max_request_size: int = PRODUCER_MAX_REQUEST_SIZE
+    consumer_group_instance_id: Optional[str] = None
     consumer_max_fetch_size: int = CONSUMER_MAX_FETCH_SIZE
     consumer_auto_offset_reset: str = CONSUMER_AUTO_OFFSET_RESET
     producer_compression_type: Optional[str] = PRODUCER_COMPRESSION_TYPE
@@ -568,6 +569,7 @@ class Settings(abc.ABC):
             producer_partitioner: SymbolArg[PartitionerT] = None,
             producer_request_timeout: Seconds = None,
             producer_api_version: str = None,
+            consumer_group_instance_id: str = None,
             consumer_api_version: str = None,
             consumer_max_fetch_size: int = None,
             consumer_auto_offset_reset: str = None,
@@ -729,6 +731,8 @@ class Settings(abc.ABC):
                 float, producer_request_timeout)
         if producer_api_version is not None:
             self.producer_api_version = producer_api_version
+        if consumer_group_instance_id is not None:
+            self.consumer_group_instance_id = consumer_group_instance_id
         if consumer_api_version is not None:
             self.consumer_api_version = consumer_api_version
         if consumer_max_fetch_size is not None:
