@@ -12,3 +12,4 @@ mypy_extensions
 intervaltree==3.1.0
 psutil==5.8.0
 aiokafka==0.12.0
+sortedcontainers>=2.0.0
