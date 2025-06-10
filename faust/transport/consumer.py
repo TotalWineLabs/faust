@@ -200,6 +200,23 @@ class TransactionManager(Service, TransactionManagerT):
         self.producer = producer
         super().__init__(**kwargs)
 
+    async def on_stop(self) -> None:
+        """Call when transaction manager is stopping."""
+        # Final flush to ensure no pending data
+        await self.flush()
+
+        self.log.info('Stopping all active transactions due to application shutdown')
+        if self.consumer.assignment():
+            # Get the transaction IDs from all currently assigned partitions
+            transaction_ids = sorted(self._tps_to_all_transactional_ids(self.consumer.assignment()))
+            if transaction_ids:
+                self.log.info(
+                    'Stopping %r transactional %s...',
+                    len(transaction_ids),
+                    pluralize(len(transaction_ids), 'producer')
+                )
+                await self._stop_transactions(transaction_ids)
+
     async def flush(self) -> None:
         """Wait for producer to transmit all pending messages."""
         await self.producer.flush()
@@ -218,8 +235,9 @@ class TransactionManager(Service, TransactionManagerT):
         # First, ensure we're done with any pending transactions
         await T(self.flush)()
         
-        # Stop producers for revoked partitions.
-        revoked_tids = sorted(self._tps_to_transactional_ids(revoked))
+        # Stop producers for revoked partitions - use _tps_to_all_transactional_ids to 
+        # include ALL revoked partitions, both active and standby
+        revoked_tids = sorted(self._tps_to_all_transactional_ids(revoked))
         if revoked_tids:
             self.log.info(
                 'Stopping %r transactional %s for %r revoked %s...',
@@ -233,6 +251,8 @@ class TransactionManager(Service, TransactionManagerT):
         await asyncio.sleep(0.1)
 
         # Start producers for assigned partitions
+        # Only start transactions for newly assigned partitions to avoid conflicts
+        # when scaling down and reusing the same transactional IDs
         assigned_tids = sorted(self._tps_to_transactional_ids(assigned))
         if assigned_tids:
             self.log.info(
@@ -265,6 +285,35 @@ class TransactionManager(Service, TransactionManagerT):
             for tpg in self._tps_to_active_tpgs(tps)
         }
 
+    def _tps_to_all_tpgs(self, tps: Set[TP]) -> Set[TopicPartitionGroup]:
+        """Convert all topic partitions (including standbys) to TopicPartitionGroups.
+        
+        This is used for revoked partitions where we need to stop ALL transactions,
+        regardless of whether they were active or standby.
+        """
+        assignor = self.app.assignor
+        return {
+            TopicPartitionGroup(
+                tp.topic,
+                tp.partition,
+                assignor.group_for_topic(tp.topic),
+            )
+            for tp in tps
+        }
+
+    def _tps_to_all_transactional_ids(self, tps: Set[TP]) -> Set[str]:
+        """Get transaction IDs for all partitions, including standbys.
+        
+        Used for cleanup during partition revocation.
+        """
+        return {
+            self.transactional_id_format.format(
+                tpg=tpg,
+                group_id=self.app.conf.id,
+            )
+            for tpg in self._tps_to_all_tpgs(tps)
+        }
+    
     def _tps_to_active_tpgs(self, tps: Set[TP]) -> Set[TopicPartitionGroup]:
         assignor = self.app.assignor
         return {
