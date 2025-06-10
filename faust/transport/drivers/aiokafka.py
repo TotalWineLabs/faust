@@ -1293,11 +1293,16 @@ class MultiTXNProducer(BaseProducer):
     ) -> None:
         for transactional_id, offsets in tid_to_offset_map.items():
             self.log.debug('+COMMIT %r %r' % (transactional_id, offsets))
-            await self._commit(
-                transactional_id, offsets, group_id,
-                start_new_transaction=start_new_transaction,
-            )
-            self.log.debug('-COMMIT %r %r' % (transactional_id, offsets))
+            try:
+                await self._commit(
+                    transactional_id, offsets, group_id,
+                    start_new_transaction=start_new_transaction,
+                )
+                self.log.debug('-COMMIT %r %r' % (transactional_id, offsets))
+            except Exception as exc:
+                self.log.error(
+                    f"Failed to commit transaction {transactional_id}: {exc}")
+                raise
 
     async def _commit(
         self, transactional_id, offsets: Mapping[TopicPartition, int],
