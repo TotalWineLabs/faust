@@ -70,6 +70,7 @@ from typing import (
     cast,
 )
 from weakref import WeakSet
+from sortedcontainers import SortedSet
 
 from mode import Service, ServiceT, flight_recorder, get_logger
 from mode.threads import MethodQueue, QueueServiceThread
@@ -199,6 +200,23 @@ class TransactionManager(Service, TransactionManagerT):
         self.producer = producer
         super().__init__(**kwargs)
 
+    async def on_stop(self) -> None:
+        """Call when transaction manager is stopping."""
+        # Final flush to ensure no pending data
+        await self.flush()
+
+        self.log.info('Stopping all active transactions due to application shutdown')
+        if self.consumer.assignment():
+            # Get the transaction IDs from all currently assigned partitions
+            transaction_ids = sorted(self._tps_to_all_transactional_ids(self.consumer.assignment()))
+            if transaction_ids:
+                self.log.info(
+                    'Stopping %r transactional %s...',
+                    len(transaction_ids),
+                    pluralize(len(transaction_ids), 'producer')
+                )
+                await self._stop_transactions(transaction_ids)
+
     async def flush(self) -> None:
         """Wait for producer to transmit all pending messages."""
         await self.producer.flush()
@@ -213,8 +231,13 @@ class TransactionManager(Service, TransactionManagerT):
                            newly_assigned: Set[TP]) -> None:
         """Call when the cluster is rebalancing."""
         T = traced_from_parent_span()
-        # Stop producers for revoked partitions.
-        revoked_tids = sorted(self._tps_to_transactional_ids(revoked))
+        
+        # First, ensure we're done with any pending transactions
+        await T(self.flush)()
+        
+        # Stop producers for revoked partitions - use _tps_to_all_transactional_ids to 
+        # include ALL revoked partitions, both active and standby
+        revoked_tids = sorted(self._tps_to_all_transactional_ids(revoked))
         if revoked_tids:
             self.log.info(
                 'Stopping %r transactional %s for %r revoked %s...',
@@ -223,8 +246,13 @@ class TransactionManager(Service, TransactionManagerT):
                 len(revoked),
                 pluralize(len(revoked), 'partition'))
             await T(self._stop_transactions, tids=revoked_tids)(revoked_tids)
+            
+        # Give the broker some time to clean up the old transactions
+        await asyncio.sleep(0.1)
 
-        # Start produers for assigned partitions
+        # Start producers for assigned partitions
+        # Only start transactions for newly assigned partitions to avoid conflicts
+        # when scaling down and reusing the same transactional IDs
         assigned_tids = sorted(self._tps_to_transactional_ids(assigned))
         if assigned_tids:
             self.log.info(
@@ -257,6 +285,35 @@ class TransactionManager(Service, TransactionManagerT):
             for tpg in self._tps_to_active_tpgs(tps)
         }
 
+    def _tps_to_all_tpgs(self, tps: Set[TP]) -> Set[TopicPartitionGroup]:
+        """Convert all topic partitions (including standbys) to TopicPartitionGroups.
+        
+        This is used for revoked partitions where we need to stop ALL transactions,
+        regardless of whether they were active or standby.
+        """
+        assignor = self.app.assignor
+        return {
+            TopicPartitionGroup(
+                tp.topic,
+                tp.partition,
+                assignor.group_for_topic(tp.topic),
+            )
+            for tp in tps
+        }
+
+    def _tps_to_all_transactional_ids(self, tps: Set[TP]) -> Set[str]:
+        """Get transaction IDs for all partitions, including standbys.
+        
+        Used for cleanup during partition revocation.
+        """
+        return {
+            self.transactional_id_format.format(
+                tpg=tpg,
+                group_id=self.app.conf.id,
+            )
+            for tpg in self._tps_to_all_tpgs(tps)
+        }
+    
     def _tps_to_active_tpgs(self, tps: Set[TP]) -> Set[TopicPartitionGroup]:
         assignor = self.app.assignor
         return {
@@ -365,8 +422,8 @@ class Consumer(Service, ConsumerT):
     # Mapping of TP to list of gap in offsets.
     _gap: MutableMapping[TP, List[int]]
 
-    # Mapping of TP to list of acked offsets.
-    _acked: MutableMapping[TP, List[int]]
+    # Mapping of TP to sorted set of acked offsets.
+    _acked: MutableMapping[TP, 'SortedSet[int]']
 
     #: Fast lookup to see if tp+offset was acked.
     _acked_index: MutableMapping[TP, Set[int]]
@@ -436,7 +493,7 @@ class Consumer(Service, ConsumerT):
             commit_livelock_soft_timeout or
             self.app.conf.broker_commit_livelock_soft_timeout)
         self._gap = defaultdict(IntervalTree)
-        self._acked = defaultdict(list)
+        self._acked = defaultdict(SortedSet)
         self._acked_index = defaultdict(set)
         self._read_offset = defaultdict(lambda: None)
         self._committed_offset = defaultdict(lambda: None)
@@ -574,8 +631,15 @@ class Consumer(Service, ConsumerT):
             if self._active_partitions is not None:
                 self._active_partitions.difference_update(revoked)
             self._paused_partitions.difference_update(revoked)
-            await T(self._on_partitions_revoked, partitions=revoked)(
-                revoked)
+            # Remove the revoked partitions from local data structures
+            for tp in revoked:
+                self._gap.pop(tp, None)
+                self._acked.pop(tp, None)
+                self._acked_index.pop(tp, None)
+                self._read_offset.pop(tp, None)
+                self._committed_offset.pop(tp, None)            
+            await T(self._on_partitions_revoked, partitions=revoked)(revoked)
+            
 
     @Service.transitions_to(CONSUMER_PARTITIONS_ASSIGNED)
     async def on_partitions_assigned(self, assigned: Set[TP]) -> None:
@@ -721,7 +785,7 @@ class Consumer(Service, ConsumerT):
                             self._unacked_messages.discard(message)
                             acked_index.add(offset)
                             acked_for_tp = self._acked[tp]
-                            acked_for_tp.append(offset)
+                            acked_for_tp.add(offset)
                             self._n_acked += 1
                             return True
                 finally:
@@ -972,7 +1036,7 @@ class Consumer(Service, ConsumerT):
 
     def _new_offset(self, tp: TP) -> Optional[int]:
         # get the new offset for this tp, by going through
-        # its list of acked messages.
+        # its sorted set of acked messages.
         acked = self._acked[tp]
 
         # We iterate over it until we find a gap
@@ -1000,15 +1064,31 @@ class Consumer(Service, ConsumerT):
                     for entry in sorted_candidates:
                         stuff_to_add.extend(range(entry.begin, entry.end))
                     new_max_offset = max(stuff_to_add[-1], max_offset + 1)
-                    acked.extend(stuff_to_add)
+                    # Add all items to the sorted set
+                    acked.update(stuff_to_add)
                     gap_for_tp.chop(0, new_max_offset)
-            acked.sort()
-            # Note: acked is always kept sorted.
+
+            # We iterate over it until we handle gap in the head of acked queue
+            # then return the previous committed offset.
+            # For example if acked[tp] is:
+            #    34 35 36 37
+            #  ^-- gap
+            # self._committed_offset[tp] is 31
+            # the return value will be None (the same as 31)
+            if self._committed_offset[tp]:
+                if min(acked) - self._committed_offset[tp] > 1:
+                    return None
+
+            # Note: acked is always kept sorted because it's a SortedSet.
             # find first list of consecutive numbers
             batch = next(consecutive_numbers(acked))
-            # remove them from the list to clean up.
-            acked[:len(batch) - 1] = []
+            
+            # Remove batch items from the sorted set
+            to_remove = set(batch[:-1])  # All but the last item
+            if to_remove:
+                acked.difference_update(to_remove)
             self._acked_index[tp].difference_update(batch)
+            
             # return the highest commit offset
             return batch[-1]
         return None
@@ -1030,8 +1110,7 @@ class Consumer(Service, ConsumerT):
             await asyncio.sleep(0)
             gap_for_tp.merge_overlaps()
 
-    async def _drain_messages(
-            self, fetcher: ServiceT) -> None:  # pragma: no cover
+    async def _drain_messages(self, fetcher: ServiceT) -> None:  # pragma: no cover
         # This is the background thread started by Fetcher, used to
         # constantly read messages using Consumer.getmany.
         # It takes Fetcher as argument, because we must be able to
@@ -1052,7 +1131,7 @@ class Consumer(Service, ConsumerT):
         yield_every = 100
         num_since_yield = 0
         sleep = asyncio.sleep
-        
+
         try:
             while not (consumer_should_stop() or fetcher_should_stop()):
                 set_flag(flag_consumer_fetching)
@@ -1068,14 +1147,9 @@ class Consumer(Service, ConsumerT):
                             await sleep(0)
                             num_since_yield = 0
 
-                            # A rebalance might occur after yielding,
-                            # so we exit the loop here
-                            if not self.flow_active:
-                                break
-
                         offset = message.offset
                         r_offset = get_read_offset(tp)
-                        if r_offset is None or offset > r_offset:
+                        if r_offset is None or offset >= r_offset:
                             gap = offset - (r_offset or 0)
                             # We have a gap in income messages
                             if gap > 1 and r_offset:
@@ -1089,24 +1163,28 @@ class Consumer(Service, ConsumerT):
                             await callback(message)
                             set_read_offset(tp, offset)
                         else:
-                            self.log.dev('DROPPED MESSAGE ROFF %r: k=%r v=%r',
-                                         offset, message.key, message.value)
+                            self.log.dev(
+                                "DROPPED MESSAGE ROFF %r: k=%r v=%r",
+                                offset,
+                                message.key,
+                                message.value,
+                            )
                     unset_flag(flag_consumer_fetching)
 
         except self.consumer_stopped_errors:
             if self.transport.app.should_stop:
                 # we're already stopping so ignore
-                self.log.info('Broker stopped consumer, shutting down...')
+                self.log.info("Broker stopped consumer, shutting down...")
                 return
             raise
         except asyncio.CancelledError:
             if self.transport.app.should_stop:
                 # we're already stopping so ignore
-                self.log.info('Consumer shutting down for user cancel.')
+                self.log.info("Consumer shutting down for user cancel.")
                 return
             raise
         except Exception as exc:
-            self.log.exception('Drain messages raised: %r', exc)
+            self.log.exception("Drain messages raised: %r", exc)
             raise
         finally:
             self.can_stop_flow.set()

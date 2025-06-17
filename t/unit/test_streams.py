@@ -6,6 +6,7 @@ from faust import joins
 from faust.exceptions import Skip
 from mode.utils.contexts import ExitStack
 from mode.utils.mocks import AsyncMock, Mock, patch
+from sortedcontainers import SortedSet
 from t.helpers import new_event
 
 
@@ -158,7 +159,7 @@ class test_Stream:
         app.consumer = Mock(name='app.consumer')
         app.consumer._committed_offset = defaultdict(lambda: -1)
         app.consumer._acked_index = defaultdict(set)
-        app.consumer._acked = defaultdict(list)
+        app.consumer._acked = defaultdict(SortedSet)
         app.consumer._n_acked = 0
         app.flow_control.resume()
         app.topics._acking_topics.add('foo')

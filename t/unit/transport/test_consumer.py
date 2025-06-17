@@ -5,6 +5,7 @@ from faust.app._attached import Attachments
 from faust.exceptions import AlreadyConfiguredWarning
 from faust.tables.manager import TableManager
 from faust.transport.base import Producer, Transport
+from intervaltree import IntervalTree
 from faust.transport.consumer import (
     Consumer,
     ConsumerThread,
@@ -19,6 +20,7 @@ from mode import Service
 from mode.threads import MethodQueue
 from mode.utils.futures import done_future
 from mode.utils.mocks import ANY, AsyncMock, Mock, call, patch
+from sortedcontainers import SortedSet
 
 TP1 = TP('foo', 0)
 TP2 = TP('foo', 1)
@@ -815,8 +817,8 @@ class test_Consumer:
 
     def test_filter_committable_offsets(self, *, consumer):
         consumer._acked = {
-            TP1: [1, 2, 3, 4, 7, 8],
-            TP2: [30, 31, 32, 33, 34, 35, 36, 40],
+            TP1: SortedSet([1, 2, 3, 4, 7, 8]),
+            TP2: SortedSet([30, 31, 32, 33, 34, 35, 36, 40]),
         }
         consumer._committed_offset = {
             TP1: 4,
@@ -934,8 +936,8 @@ class test_Consumer:
 
     def test_filter_tps_with_pending_acks(self, *, consumer):
         consumer._acked = {
-            TP1: [1, 2, 3, 4, 5, 6],
-            TP2: [3, 4, 5, 6],
+            TP1: SortedSet([1, 2, 3, 4, 5, 6]),
+            TP2: SortedSet([3, 4, 5, 6]),
         }
         assert list(consumer._filter_tps_with_pending_acks()) == [
             TP1, TP2,
@@ -965,20 +967,23 @@ class test_Consumer:
         (TP1, [1, 3, 4, 6, 7, 8, 10], 1),
     ])
     def test_new_offset(self, tp, acked, expected_offset, *, consumer):
-        consumer._acked[tp] = acked
+        consumer._acked[tp] = SortedSet(acked)
         assert consumer._new_offset(tp) == expected_offset
 
     @pytest.mark.parametrize('tp,acked,gaps,expected_offset', [
         (TP1, [], [], None),
         (TP1, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], [], 10),
-        (TP1, [1, 2, 3, 4, 5, 6, 7, 8, 10], [9], 10),
-        (TP1, [1, 2, 3, 4, 6, 7, 8, 10], [5], 8),
-        (TP1, [1, 3, 4, 6, 7, 8, 10], [2, 5, 9], 10),
+        (TP1, [1, 2, 3, 4, 5, 6, 7, 8, 10], [(9, 10)], 10),
+        (TP1, [1, 2, 3, 4, 6, 7, 8, 10], [(5, 6)], 8),
+        (TP1, [1, 3, 4, 6, 7, 8, 10], [(2, 3), (5, 6), (9, 10)], 10),
     ])
     def test_new_offset_with_gaps(self, tp, acked, gaps,
                                   expected_offset, *, consumer):
-        consumer._acked[tp] = acked
-        consumer._gap[tp] = gaps
+        consumer._acked[tp] = SortedSet(acked)
+        tree = IntervalTree()
+        for start, end in gaps:
+            tree.addi(start, end)
+        consumer._gap[tp] = tree
         assert consumer._new_offset(tp) == expected_offset
 
     @pytest.mark.asyncio
