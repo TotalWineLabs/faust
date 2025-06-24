@@ -1,6 +1,8 @@
 """Partition assignor."""
 import socket
 import zlib
+import os
+import signal
 
 from collections import defaultdict
 from typing import (
@@ -128,8 +130,13 @@ class PartitionAssignor(
         a = sorted(assignment.assignment)
         b = sorted(
             self._assignment.kafka_protocol_assignment(self._table_manager))
+        if a != b:
+            # Not sure how we can cleanly recover from a assignment mismatch 
+            # so we kill the process and assume a restart.
+            logger.error(f'Assignment mismatch: {a!r} != {b!r}')
+            os.kill(os.getpid(), signal.SIGKILL)
         assert a == b, f'{a!r} != {b!r}'
-        assert metadata.url == str(self._url)
+        assert metadata.url == str(self._url)            
 
     def metadata(self, topics: Set[str]) -> ConsumerProtocolMemberMetadata:
         return ConsumerProtocolMemberMetadata(self.version, list(topics),
