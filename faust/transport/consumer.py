@@ -339,6 +339,8 @@ class TransactionManager(Service, TransactionManagerT):
         if p is not None:
             group = self.app.assignor.group_for_topic(topic)
             transactional_id = f'{self.app.conf.id}-{group}-{p}'
+        elif partition is not None:
+            p = partition            
         return await self.producer.send(
             topic, key, value, p, timestamp, headers,
             transactional_id=transactional_id,
