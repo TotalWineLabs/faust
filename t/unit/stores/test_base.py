@@ -121,6 +121,9 @@ class MySerializedStore(SerializedStore):
     def reset_state(self):
         ...
 
+    def _prefix_scan(self, prefix: bytes):
+        ...        
+
 
 class test_SerializedStore:
 
