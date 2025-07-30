@@ -559,7 +559,9 @@ class Consumer(Service, ConsumerT):
         read_offset = self._read_offset
         _committed_offsets = await self.seek_to_committed()
         read_offset.update({
-            tp: offset if offset is not None and offset >= 0 else None
+            # Since committed offset is "next to consume", 
+            # read_offset should be the last processed (committed - 1)
+            tp: (offset - 1) if offset is not None and offset > 0 else None
             for tp, offset in _committed_offsets.items()
         })
         committed_offsets = {
@@ -781,7 +783,7 @@ class Consumer(Service, ConsumerT):
             if self.app.topics.acks_enabled_for(message.topic):
                 committed = self._committed_offset[tp]
                 try:
-                    if committed is None or offset > committed:
+                    if committed is None or offset >= committed:
                         acked_index = self._acked_index[tp]
                         if offset not in acked_index:
                             self._unacked_messages.discard(message)
@@ -1075,10 +1077,10 @@ class Consumer(Service, ConsumerT):
             # For example if acked[tp] is:
             #    34 35 36 37
             #  ^-- gap
-            # self._committed_offset[tp] is 31
+            # self._committed_offset[tp] is 32 (next offset to consume after 31)
             # the return value will be None (the same as 31)
             if self._committed_offset[tp]:
-                if min(acked) - self._committed_offset[tp] > 1:
+                if min(acked) - self._committed_offset[tp] > 0:
                     return None
 
             # Note: acked is always kept sorted because it's a SortedSet.
@@ -1091,8 +1093,10 @@ class Consumer(Service, ConsumerT):
                 acked.difference_update(to_remove)
             self._acked_index[tp].difference_update(batch)
             
-            # return the highest commit offset
-            return batch[-1]
+            # return the next offset to consume (last processed + 1)
+            # This prevents duplicate consumption on restart since Kafka
+            # will start delivering from this offset (exclusive of processed messages)
+            return batch[-1] + 1
         return None
 
     async def on_task_error(self, exc: BaseException) -> None:
@@ -1103,7 +1107,8 @@ class Consumer(Service, ConsumerT):
         committed = self._committed_offset[tp]
         gap_for_tp = self._gap[tp]
         if committed is not None:
-            offset_from = max(offset_from, committed + 1)
+            # committed is "next offset to consume", so last processed is committed - 1
+            offset_from = max(offset_from, committed)
         # intervaltree intervals exclude the end
         if offset_from <= offset_to:
             gap_for_tp.addi(offset_from, offset_to + 1)
