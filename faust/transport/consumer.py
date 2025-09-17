@@ -1158,8 +1158,12 @@ class Consumer(Service, ConsumerT):
                         r_offset = get_read_offset(tp)
                         if r_offset is None or offset >= r_offset:
                             gap = offset - (r_offset or 0)
-                            # We have a gap in income messages
-                            if gap > 1 and r_offset:
+                            # We have a gap in incoming message.
+                            # Note: tracking gaps is slow but important for offset commit management.
+                            # Changelog topics can have large and frequent gaps due to compaction, but we
+                            # don't commit offsets to kafka for changelog topics so we can skip gap tracking for them.
+                            # and improve performance for table recovery procedure for highly compacted changelog topics.
+                            if gap > 1 and r_offset and not self._is_changelog_tp(tp):
                                 acks_enabled = acks_enabled_for(message.topic)
                                 if acks_enabled:
                                     await self._add_gap(tp, r_offset + 1, offset)
