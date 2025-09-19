@@ -417,6 +417,10 @@ class ConsumerT(ServiceT):
     def unacked(self) -> Set[Message]:
         ...
 
+    @abc.abstractmethod
+    def request_rejoin(self) -> None:
+        ...
+
 
 class ConductorT(ServiceT, MutableSet[TopicT]):
 

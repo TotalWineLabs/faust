@@ -894,6 +894,10 @@ class AIOKafkaConsumerThread(ConsumerThread):
         all_partitions = list(partitions_for_topic)
         available = list(metadata.available_partitions_for_topic(topic))
         return self._partitioner(key, all_partitions, available)
+    
+    def request_rejoin(self):
+        """Force consumer to rejoin group."""
+        self._consumer._coordinator.request_rejoin()
 
 
 class BaseProducer(abc.ABC):
@@ -1887,7 +1891,7 @@ def credentials_to_aiokafka_auth(credentials: CredentialsT = None,
                 'ssl_context': credentials.ssl_context,
             }
         else:
-            raise ImproperlyConfigured(
+            raise ImproperlyConfigured( 
                 f'aiokafka does not support {credentials}')
     elif ssl_context is not None:
         return {

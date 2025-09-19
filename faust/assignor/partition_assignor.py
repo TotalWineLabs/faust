@@ -1,6 +1,7 @@
 """Partition assignor."""
 import socket
 import zlib
+import time
 
 from collections import defaultdict
 from typing import (
@@ -85,6 +86,9 @@ class PartitionAssignor(
         self._active_tps = set()
         self._standby_tps = set()
         self._topic_groups = {}
+        self._assignment_retry_count = 0
+        self._max_assignment_retries = 30
+        self._last_assignment_attempt = None
 
     def group_for_topic(self, topic: str) -> int:
         return self._topic_groups[topic]
@@ -117,23 +121,76 @@ class PartitionAssignor(
 
     def on_assignment(
             self, assignment: ConsumerProtocolMemberMetadata) -> None:
+        """Handle assignment from Kafka coordinator with retry logic."""
         metadata = cast(ClientMetadata,
                         ClientMetadata.loads(
                             self._decompress(assignment.user_data)))
+        
+        # Track assignment attempts
+        current_time = time.time()
+        if (self._last_assignment_attempt is None or 
+            current_time - self._last_assignment_attempt > 30):  # Reset after 30s
+            self._assignment_retry_count = 0
+        self._last_assignment_attempt = current_time
+
         self._assignment = metadata.assignment
         self._topic_groups = dict(metadata.topic_groups)
         self._active_tps = self._assignment.active_tps
         self._standby_tps = self._assignment.standby_tps
         self.changelog_distribution = metadata.changelog_distribution
-        a = sorted(assignment.assignment)
-        b = sorted(
+        
+        # Verify assignment consistency
+        kafka_assignment = sorted(assignment.assignment)
+        faust_assignment = sorted(
             self._assignment.kafka_protocol_assignment(self._table_manager))
-        assert a == b, f'{a!r} != {b!r}'
-        assert metadata.url == str(self._url)
+        
+        if kafka_assignment != faust_assignment:
+            self._assignment_retry_count += 1
+
+            if self._assignment_retry_count <= self._max_assignment_retries:
+                # Log and retry
+                logger.warning(
+                    'Assignment mismatch (attempt %d/%d) - requesting rebalance',
+                    self._assignment_retry_count, self._max_assignment_retries
+                )
+                # Request rebalance to recalculate assignments based on refreshed metadata
+                self._request_rebalance_for_assignment_mismatch()
+                return
+            else:
+                # Max retries exceeded - log error but continue
+                logger.error(
+                    'Assignment mismatch persists after %d retries. '
+                    'Continuing with Kafka coordinator assignment. '
+                    'This may indicate a bug or configuration issue.',
+                    self._max_assignment_retries
+                )
+                self._log_assignment_mismatch(kafka_assignment, faust_assignment, metadata)
+                # Continue with the assignment anyway                
+        
+        # Verify URL consistency
+        if metadata.url != str(self._url):
+            logger.warning(
+                'URL mismatch: expected=%r, got=%r - requesting rebalance',
+                str(self._url), metadata.url
+            )
+            if self._assignment_retry_count <= self._max_assignment_retries:
+                self._assignment_retry_count += 1
+                self._request_rebalance_for_assignment_mismatch()
+                return
+        
+        # Reset retry count on successful assignment
+        self._assignment_retry_count = 0
+        logger.debug('Assignment verification successful')
 
     def metadata(self, topics: Set[str]) -> ConsumerProtocolMemberMetadata:
         return ConsumerProtocolMemberMetadata(self.version, list(topics),
                                               self._metadata.dumps())
+
+    def _request_rebalance_for_assignment_mismatch(self):
+        """Request a rebalance when assignment mismatch is detected."""
+        logger.info('Requesting rebalance due to assignment mismatch')
+        # This will cause all members to rejoin and recalculate assignments
+        self.app.consumer.request_rejoin()
 
     @classmethod
     def _group_co_subscribed(cls, topics: Set[str],

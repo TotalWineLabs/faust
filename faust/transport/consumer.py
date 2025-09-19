@@ -1158,7 +1158,7 @@ class Consumer(Service, ConsumerT):
                         r_offset = get_read_offset(tp)
                         if r_offset is None or offset >= r_offset:
                             gap = offset - (r_offset or 0)
-                            # We have a gap in incoming message.
+                            # We have a gap in income messages
                             # Note: tracking gaps is slow but important for offset commit management.
                             # Changelog topics can have large and frequent gaps due to compaction, but we
                             # don't commit offsets to kafka for changelog topics so we can skip gap tracking for them.
@@ -1334,6 +1334,10 @@ class ConsumerThread(QueueServiceThread):
     def verify_recovery_event_path(self, now: float, tp: TP) -> None:
         ...
 
+    @abc.abstractmethod
+    def request_rejoin(self) -> None:
+        """Force consumer to rejoin group."""
+        ...
 
 class ThreadDelegateConsumer(Consumer):
 
@@ -1444,3 +1448,6 @@ class ThreadDelegateConsumer(Consumer):
 
     def verify_recovery_event_path(self, now: float, tp: TP) -> None:
         return self._thread.verify_recovery_event_path(now, tp)
+    
+    def request_rejoin(self):
+        return self._thread.request_rejoin()
