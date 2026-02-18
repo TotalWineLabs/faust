@@ -123,7 +123,7 @@ class Web(base.Web):
         assert cors
         self.init_server()
         server_cls = ServerThread if self.app.conf.web_in_thread else Server
-        self._thread = server_cls(self, loop=self.loop, beacon=self.beacon)
+        self._thread = server_cls(self, beacon=self.beacon)
         self.add_dependency(self._thread)
 
     async def wsgi(self) -> Any:

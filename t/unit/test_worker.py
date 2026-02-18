@@ -59,7 +59,7 @@ class test_Worker:
                 assert worker._shutdown_immediately
                 assert worker.spinner.stopped
                 ensure_future.assert_called_with(
-                    CoroEq(worker._stop_on_signal), loop=worker.loop)
+                    CoroEq(worker._stop_on_signal))
                 coro = ensure_future.call_args[0][0]
         asyncio.ensure_future(coro).cancel()  # silence warning
 
@@ -69,7 +69,7 @@ class test_Worker:
         with patch('asyncio.ensure_future') as ensure_future:
             worker._on_sigint()
             coro = ensure_future.call_args[0][0]
-        asyncio.ensure_future(coro, loop=loop).cancel()
+        asyncio.ensure_future(coro).cancel()
 
     @pytest.mark.asyncio
     async def test__on_sigterm(self, worker):
@@ -78,7 +78,7 @@ class test_Worker:
             assert worker._shutdown_immediately
             assert worker.spinner.stopped
             ensure_future.assert_called_with(
-                CoroEq(worker._stop_on_signal), loop=worker.loop)
+                CoroEq(worker._stop_on_signal))
             coro = ensure_future.call_args[0][0]
         asyncio.ensure_future(coro).cancel()  # silence warning
 

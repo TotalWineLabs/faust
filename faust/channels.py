@@ -97,10 +97,8 @@ class Channel(ChannelT[T]):
                  queue: ThrowableQueue = None,
                  maxsize: int = None,
                  root: ChannelT = None,
-                 active_partitions: Set[TP] = None,
-                 loop: asyncio.AbstractEventLoop = None) -> None:
+                 active_partitions: Set[TP] = None) -> None:
         self.app = app
-        self.loop = loop
         self.is_iterator = is_iterator
         self._queue = queue
         self.maxsize = maxsize
@@ -137,7 +135,6 @@ class Channel(ChannelT[T]):
                 maxsize = self.app.conf.stream_buffer_maxsize
             self._queue = self.app.FlowControlQueue(
                 maxsize=maxsize,
-                loop=self.loop,
                 clear_on_resume=True,
             )
         return self._queue
@@ -174,7 +171,6 @@ class Channel(ChannelT[T]):
         # How to create a copy of this channel.
         return {
             'app': self.app,
-            'loop': self.loop,
             'schema': self.schema,
             'key_type': self.key_type,
             'value_type': self.value_type,

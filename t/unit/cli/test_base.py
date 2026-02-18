@@ -349,7 +349,6 @@ class test_Command:
             Service.from_awaitable.assert_called_once_with(
                 command.execute.return_value,
                 name=type(command).__name__,
-                loop=loop,
             )
             command.execute.assert_called_once_with(1, kw=2)
 
@@ -371,7 +370,6 @@ class test_Command:
                 console_port=command.console_port,
                 redirect_stdouts=command.redirect_stdouts or False,
                 redirect_stdouts_level=command.redirect_stdouts_level,
-                loop=loop,
                 daemon=command.daemon,
             )
 

@@ -68,7 +68,7 @@ class Consumer(ThreadDelegateConsumer):
 
     def _new_consumer_thread(self) -> ConsumerThread:
         return ConfluentConsumerThread(
-            self, loop=self.loop, beacon=self.beacon)
+            self, beacon=self.beacon)
 
     async def create_topic(self,
                            topic: str,
@@ -133,21 +133,19 @@ class ConfluentConsumerThread(ConsumerThread):
     _assigned: bool = False
 
     async def on_start(self) -> None:
-        self._consumer = self._create_consumer(loop=self.thread_loop)
+        self._consumer = self._create_consumer()
 
     def _create_consumer(
-            self,
-            loop: asyncio.AbstractEventLoop) -> _Consumer:
+            self) -> _Consumer:
         transport = cast(Transport, self.transport)
         if self.app.client_only:
-            return self._create_client_consumer(transport, loop=loop)
+            return self._create_client_consumer(transport)
         else:
-            return self._create_worker_consumer(transport, loop=loop)
+            return self._create_worker_consumer(transport)
 
     def _create_worker_consumer(
             self,
-            transport: 'Transport',
-            loop: asyncio.AbstractEventLoop) -> _Consumer:
+            transport: 'Transport') -> _Consumer:
         conf = self.app.conf
         self._assignor = self.app.assignor
 
@@ -173,8 +171,7 @@ class ConfluentConsumerThread(ConsumerThread):
 
     def _create_client_consumer(
             self,
-            transport: 'Transport',
-            loop: asyncio.AbstractEventLoop) -> _Consumer:
+            transport: 'Transport') -> _Consumer:
         conf = self.app.conf
         return confluent_kafka.Consumer({
             'bootstrap.servers': server_list(
@@ -453,7 +450,7 @@ class Producer(base.Producer):
 
     def __post_init__(self) -> None:
         self._producer_thread = ProducerThread(
-            self, loop=self.loop, beacon=self.beacon)
+            self, beacon=self.beacon)
         self._quick_produce = self._producer_thread.produce
 
     async def on_restart(self) -> None:
@@ -506,7 +503,7 @@ class Producer(base.Producer):
                    *,
                    transactional_id: str = None) -> Awaitable[RecordMetadata]:
         """Send message for future delivery."""
-        fut = ProducerProduceFuture(loop=self.loop)
+        fut = ProducerProduceFuture()
         self._quick_produce(
             topic, value, key, partition,
             timestamp=int(timestamp * 1000) if timestamp else timestamp,

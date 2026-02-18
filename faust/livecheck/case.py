@@ -229,7 +229,7 @@ class Case(Service):
         return execution
 
     def _now(self) -> datetime:
-        return datetime.utcnow().astimezone(timezone.utc)
+        return datetime.now(timezone.utc)
 
     async def run(self, *test_args: Any, **test_kwargs: Any) -> None:
         """Override this to define your test case."""

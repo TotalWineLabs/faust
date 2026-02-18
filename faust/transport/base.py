@@ -57,16 +57,14 @@ class Transport(TransportT):
     def __init__(self,
                  url: List[URL],
                  app: AppT,
-                 loop: asyncio.AbstractEventLoop = None) -> None:
+                 **kwargs: Any) -> None:
         self.url = url
         self.app = app
-        self.loop = loop or asyncio.get_event_loop()
 
     def create_consumer(self, callback: ConsumerCallback,
                         **kwargs: Any) -> ConsumerT:
         """Create new consumer."""
         return self.Consumer(self, callback=callback,
-                             loop=self.loop,
                              **kwargs)
 
     def create_producer(self, **kwargs: Any) -> ProducerT:
@@ -87,4 +85,4 @@ class Transport(TransportT):
 
     def create_conductor(self, **kwargs: Any) -> ConductorT:
         """Create new consumer conductor."""
-        return self.Conductor(app=self.app, loop=self.loop, **kwargs)
+        return self.Conductor(app=self.app, **kwargs)

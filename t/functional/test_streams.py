@@ -18,16 +18,16 @@ class FooModel(faust.Record):
 
 def new_stream(app, *args, **kwargs):
     app = _prepare_app(app)
-    return _new_stream(app, app.channel(loop=app.loop, maxsize=1000), **kwargs)
+    return _new_stream(app, app.channel(maxsize=1000), **kwargs)
 
 
 def new_topic_stream(app, *args, name: str = 'test', **kwargs):
     app = _prepare_app(app)
-    return _new_stream(app, app.topic(name, loop=app.loop), **kwargs)
+    return _new_stream(app, app.topic(name), **kwargs)
 
 
 def _new_stream(app, channel, *args, **kwargs):
-    return channel.stream(*args, loop=app.loop, **kwargs)
+    return channel.stream(*args, **kwargs)
 
 
 def _prepare_app(app):
@@ -106,7 +106,7 @@ async def test_items(app):
 async def test_through(app):
     app._attachments.enabled = False
     async with new_stream(app) as orig:
-        channel = app.channel(loop=app.loop)
+        channel = app.channel()
         stream = orig.through(channel)
         for i in range(100):
             await orig.channel.deliver(message(key=i, value=i * 2))

@@ -11,6 +11,7 @@ import os
 import random
 import string
 import sys
+import typing
 from collections import defaultdict
 from datetime import datetime
 from decimal import Decimal
@@ -405,7 +406,7 @@ class NamedTupleNode(Node):
         fields = ', '.join(
             '{0}={1}'.format(
                 field, self.root.build(var[i], typ))
-            for i, (field, typ) in enumerate(tup._field_types.items())
+            for i, (field, typ) in enumerate(typing.get_type_hints(tup).items())
         )
         return f'{self.local_name}({fields})'
 

@@ -173,7 +173,6 @@ class Fetcher(Service):
             consumer = cast(Consumer, self.app.consumer)
             self._drainer = asyncio.ensure_future(
                 consumer._drain_messages(self),
-                loop=self.loop,
             )
             await self._drainer
         except asyncio.CancelledError:
@@ -507,12 +506,11 @@ class Consumer(Service, ConsumerT):
         self.can_resume_flow = Event()
         self.can_stop_flow = Event()
         self._reset_state()
-        super().__init__(loop=loop or self.transport.loop, **kwargs)
+        super().__init__(**kwargs)
         self.transactions = self.transport.create_transaction_manager(
             consumer=self,
             producer=self.app.producer,
             beacon=self.beacon,
-            loop=self.loop,
         )
 
     def on_init_dependencies(self) -> Iterable[ServiceT]:
@@ -798,11 +796,11 @@ class Consumer(Service, ConsumerT):
 
     async def _wait_for_ack(self, timeout: float) -> None:
         # arm future so that `ack()` can wake us up
-        self._waiting_for_ack = asyncio.Future(loop=self.loop)
+        self._waiting_for_ack = asyncio.Future()
         try:
             # wait for `ack()` to wake us up
             await asyncio.wait_for(
-                self._waiting_for_ack, loop=self.loop, timeout=1)
+                self._waiting_for_ack, timeout=1)
         except (asyncio.TimeoutError,
                 asyncio.CancelledError):  # pragma: no cover
             pass
@@ -896,7 +894,7 @@ class Consumer(Service, ConsumerT):
             # original commit finished, return False as we did not commit
             return False
 
-        self._commit_fut = asyncio.Future(loop=self.loop)
+        self._commit_fut = asyncio.Future()
         try:
             return await self.force_commit(
                 topics,
@@ -1349,7 +1347,7 @@ class ThreadDelegateConsumer(Consumer):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._method_queue = MethodQueue(loop=self.loop, beacon=self.beacon)
+        self._method_queue = MethodQueue(beacon=self.beacon)
         self.add_dependency(self._method_queue)
         self._thread = self._new_consumer_thread()
         self.add_dependency(self._thread)

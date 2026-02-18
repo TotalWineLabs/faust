@@ -180,7 +180,7 @@ class Worker(mode.Worker):
 
                     def manage_loop():
                         loop = asyncio.get_event_loop()
-                        worker = Worker(app, loop=loop)
+                        worker = Worker(app)
                         try:
                             loop.run_until_complete(start_worker(worker)
                         finally:
@@ -205,7 +205,6 @@ class Worker(mode.Worker):
             that the worker will change into when started.
             This working directory change is permanent for the process,
             or until something else changes the working directory again.
-        loop (asyncio.AbstractEventLoop): Custom event loop object.
     """
 
     logger = logger
@@ -250,7 +249,6 @@ class Worker(mode.Worker):
                  blocking_timeout: float = BLOCKING_TIMEOUT,
                  workdir: Union[Path, str] = None,
                  console_port: int = CONSOLE_PORT,
-                 loop: asyncio.AbstractEventLoop = None,
                  redirect_stdouts: bool = None,
                  redirect_stdouts_level: Severity = None,
                  logging_config: Dict = None,
@@ -285,7 +283,6 @@ class Worker(mode.Worker):
             redirect_stdouts=redirect_stdouts,
             redirect_stdouts_level=redirect_stdouts_level,
             logging_config=logging_config,
-            loop=loop,
             **kwargs)
         self.spinner = terminal.Spinner(file=self.stdout)
         self._on_startup_finished = Event()

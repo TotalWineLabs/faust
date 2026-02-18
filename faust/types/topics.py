@@ -80,8 +80,7 @@ class TopicT(ChannelT):
                  root: ChannelT = None,
                  active_partitions: Set[TP] = None,
                  allow_empty: bool = False,
-                 has_prefix: bool = False,
-                 loop: asyncio.AbstractEventLoop = None) -> None:
+                 has_prefix: bool = False) -> None:
         ...
 
     @property

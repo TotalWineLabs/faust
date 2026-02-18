@@ -452,7 +452,6 @@ class App(AppT, Service):
                  *,
                  monitor: Monitor = None,
                  config_source: Any = None,
-                 loop: asyncio.AbstractEventLoop = None,
                  beacon: NodeT = None,
                  **options: Any) -> None:
         # This is passed to the configuration in self.conf
@@ -495,7 +494,7 @@ class App(AppT, Service):
 
         self.boot_strategy = self.BootStrategy(self)
 
-        Service.__init__(self, loop=loop, beacon=beacon)
+        Service.__init__(self, beacon=beacon)
 
     def _init_signals(self) -> None:
         # Signals in Faust are the same as in Django, but asynchronous by
@@ -556,7 +555,6 @@ class App(AppT, Service):
         # The beacon is also reattached in case the monitor
         # was created by the user.
         self.monitor.beacon.reattach(self.beacon)
-        self.monitor.loop = self.loop
         self.sensors.add(self.monitor)
 
         if self.producer_only:
@@ -627,7 +625,6 @@ class App(AppT, Service):
             self, service: Union[ServiceT, Type[ServiceT]]) -> ServiceT:
         if inspect.isclass(service):
             return cast(Type[ServiceT], service)(
-                loop=self.loop,
                 beacon=self.beacon,
             )
         else:
@@ -767,8 +764,7 @@ class App(AppT, Service):
               config: Mapping[str, Any] = None,
               maxsize: int = None,
               allow_empty: bool = False,
-              has_prefix: bool = False,
-              loop: asyncio.AbstractEventLoop = None) -> TopicT:
+              has_prefix: bool = False) -> TopicT:
         """Create topic description.
 
         Topics are named channels (for example a Kafka topic),
@@ -797,7 +793,6 @@ class App(AppT, Service):
             config=config,
             allow_empty=allow_empty,
             has_prefix=has_prefix,
-            loop=loop,
         )
 
     def channel(self,
@@ -805,8 +800,7 @@ class App(AppT, Service):
                 schema: SchemaT = None,
                 key_type: ModelArg = None,
                 value_type: ModelArg = None,
-                maxsize: int = None,
-                loop: asyncio.AbstractEventLoop = None) -> ChannelT:
+                maxsize: int = None) -> ChannelT:
         """Create new channel.
 
         By default this will create an in-memory channel
@@ -823,7 +817,6 @@ class App(AppT, Service):
             key_type=key_type,
             value_type=value_type,
             maxsize=maxsize,
-            loop=loop,
         )
 
     def agent(self,
@@ -1683,28 +1676,26 @@ class App(AppT, Service):
 
     def _new_transport(self) -> TransportT:
         return transport.by_url(self.conf.broker_consumer[0])(
-            self.conf.broker_consumer, self, loop=self.loop)
+            self.conf.broker_consumer, self)
 
     def _new_producer_transport(self) -> TransportT:
         return transport.by_url(self.conf.broker_producer[0])(
-            self.conf.broker_producer, self, loop=self.loop)
+            self.conf.broker_producer, self)
 
     def _new_cache_backend(self) -> CacheBackendT:
         return cache_backends.by_url(self.conf.cache)(
-            self, self.conf.cache, loop=self.loop)
+            self, self.conf.cache)
 
     def FlowControlQueue(
             self,
             maxsize: int = None,
             *,
-            clear_on_resume: bool = False,
-            loop: asyncio.AbstractEventLoop = None) -> ThrowableQueue:
+            clear_on_resume: bool = False) -> ThrowableQueue:
         """Like :class:`asyncio.Queue`, but can be suspended/resumed."""
         return ThrowableQueue(
             maxsize=maxsize,
             flow_control=self.flow_control,
             clear_on_resume=clear_on_resume,
-            loop=loop or self.loop,
         )
 
     def Worker(self, **kwargs: Any) -> _Worker:
@@ -1860,7 +1851,6 @@ class App(AppT, Service):
         """Map of available tables, and the table manager service."""
         return self.conf.TableManager(
             app=self,
-            loop=self.loop,
             beacon=self.beacon,
         )
 
@@ -1883,7 +1873,7 @@ class App(AppT, Service):
         if self._monitor is None:
             self._monitor = cast(Monitor,
                                  self.conf.Monitor(
-                                     loop=self.loop, beacon=self.beacon))
+                                     beacon=self.beacon))
         return self._monitor
 
     @monitor.setter
@@ -1894,12 +1884,12 @@ class App(AppT, Service):
     def _fetcher(self) -> _Fetcher:
         """Fetcher helps Kafka Consumer retrieve records in topics."""
         return cast(Type[_Fetcher], self.transport.Fetcher)(
-            self, loop=self.loop, beacon=self.consumer.beacon)
+            self, beacon=self.consumer.beacon)
 
     @cached_property
     def _reply_consumer(self) -> ReplyConsumer:
         """Kafka Consumer that consumes agent replies."""
-        return ReplyConsumer(self, loop=self.loop, beacon=self.beacon)
+        return ReplyConsumer(self, beacon=self.beacon)
 
     @cached_property
     def flow_control(self) -> FlowControlEvent:
@@ -1908,7 +1898,7 @@ class App(AppT, Service):
         This object controls flow into stream queues,
         and can also clear all buffers.
         """
-        return FlowControlEvent(loop=self.loop)
+        return FlowControlEvent()
 
     @property
     def http_client(self) -> HttpClientT:
@@ -1941,7 +1931,7 @@ class App(AppT, Service):
         traditionally require a lock/mutex.
         """
         return self.conf.LeaderAssignor(
-            self, loop=self.loop, beacon=self.beacon)
+            self, beacon=self.beacon)
 
     @cached_property
     def router(self) -> RouterT:

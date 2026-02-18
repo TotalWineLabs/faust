@@ -86,7 +86,6 @@ class test_AgentService:
             max_restarts=100.0,
             over=1.0,
             replacement=agent._replace_actor,
-            loop=agent.loop,
             beacon=agent.beacon,
         )
         assert s is strategy()()
@@ -399,7 +398,7 @@ class test_Agent:
             coro = agent._slurp()
             agent._execute_actor.assert_called_once_with(coro, aref)
             Task.assert_called_once_with(
-                agent._execute_actor(), loop=agent.loop)
+                agent._execute_actor())
             task = Task()
             assert task._beacon is beacon
             assert aref.actor_task is task
@@ -418,7 +417,7 @@ class test_Agent:
             coro = aref
             agent2._execute_actor.assert_called_once_with(coro, aref)
             Task.assert_called_once_with(
-                agent2._execute_actor(), loop=agent2.loop)
+                agent2._execute_actor())
             task = Task()
             assert task._beacon is beacon
             assert aref.actor_task is task

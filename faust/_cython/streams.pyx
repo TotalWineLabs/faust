@@ -18,7 +18,6 @@ cdef class StreamIterator:
         object chan_quick_get
         object chan_slow_get
         object processors
-        object loop
         object on_merge
         object on_stream_event_in
         object on_stream_event_out
@@ -39,7 +38,6 @@ cdef class StreamIterator:
         self.app = self.stream.app
         self.topics = self.app.topics
         self.acks_enabled_for = self.topics.acks_enabled_for
-        self.loop = self.stream.loop
         self.on_merge = self.stream.on_merge
         self.on_stream_event_in = self.stream._on_stream_event_in
         self.on_stream_event_out = self.stream._on_stream_event_out
@@ -81,7 +79,7 @@ cdef class StreamIterator:
         value = None
 
         while value is None:
-            await sleep(0, loop=self.loop)
+            await sleep(0)
             need_slow_get, channel_value = self._try_get_quick_value()
             if need_slow_get:
                 channel_value = await self.chan_slow_get()

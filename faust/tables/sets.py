@@ -293,7 +293,7 @@ class SetTable(Table[KT, ChangeloggedSet[VT]]):
             manager_topic_name = self.name + self.manager_topic_suffix
         self.manager_topic_name = manager_topic_name
 
-        self.manager = self.Manager(self, loop=self.loop, beacon=self.beacon)
+        self.manager = self.Manager(self, beacon=self.beacon)
 
     async def on_start(self) -> None:
         """Call when set table starts."""

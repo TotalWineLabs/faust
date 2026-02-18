@@ -232,7 +232,7 @@ class Consumer(ThreadDelegateConsumer):
     )
 
     def _new_consumer_thread(self) -> ConsumerThread:
-        return AIOKafkaConsumerThread(self, loop=self.loop, beacon=self.beacon)
+        return AIOKafkaConsumerThread(self, beacon=self.beacon)
 
     async def create_topic(self,
                            topic: str,
@@ -320,7 +320,7 @@ class AIOKafkaConsumerThread(ConsumerThread):
 
     async def on_start(self) -> None:
         """Call when consumer starts."""
-        self._consumer = self._create_consumer(loop=self.thread_loop)
+        self._consumer = self._create_consumer()
         self.time_started = monotonic()
         await self._consumer.start()
 
@@ -333,18 +333,16 @@ class AIOKafkaConsumerThread(ConsumerThread):
             await self._consumer.stop()
 
     def _create_consumer(
-            self,
-            loop: asyncio.AbstractEventLoop) -> aiokafka.AIOKafkaConsumer:
+            self) -> aiokafka.AIOKafkaConsumer:
         transport = cast(Transport, self.transport)
         if self.app.client_only:
-            return self._create_client_consumer(transport, loop=loop)
+            return self._create_client_consumer(transport)
         else:
-            return self._create_worker_consumer(transport, loop=loop)
+            return self._create_worker_consumer(transport)
 
     def _create_worker_consumer(
             self,
-            transport: 'Transport',
-            loop: asyncio.AbstractEventLoop) -> aiokafka.AIOKafkaConsumer:
+            transport: 'Transport') -> aiokafka.AIOKafkaConsumer:
         isolation_level: str = 'read_uncommitted'
         conf = self.app.conf
         if self.consumer.in_transaction:
@@ -369,7 +367,6 @@ class AIOKafkaConsumerThread(ConsumerThread):
                 f'broker_request_timeout={request_timeout}')
 
         return aiokafka.AIOKafkaConsumer(
-            loop=loop,
             api_version=conf.consumer_api_version,
             client_id=conf.broker_client_id,
             group_id=conf.id,
@@ -392,10 +389,7 @@ class AIOKafkaConsumerThread(ConsumerThread):
             **auth_settings,
         )
 
-    def _create_client_consumer(
-            self,
-            transport: 'Transport',
-            loop: asyncio.AbstractEventLoop) -> aiokafka.AIOKafkaConsumer:
+    def _create_client_consumer(\n            self,\n            transport: 'Transport') -> aiokafka.AIOKafkaConsumer:
         conf = self.app.conf
         auth_settings = credentials_to_aiokafka_auth(
             conf.broker_credentials, conf.ssl_context)
@@ -1005,7 +999,6 @@ class BaseProducer(abc.ABC):
         self._sasl_kerberos_domain_name = sasl_kerberos_domain_name
 
         self.client = AIOKafkaClient(
-            loop=loop, 
             bootstrap_servers=bootstrap_servers,
             client_id=client_id, 
             metadata_max_age_ms=metadata_max_age_ms,
@@ -1257,7 +1250,6 @@ class MultiTXNProducer(BaseProducer):
                 .format(acks))
 
         super().__init__(
-            loop=loop,
             bootstrap_servers=bootstrap_servers,
             acks=acks,
             transaction_timeout_ms=transaction_timeout_ms,
@@ -1272,8 +1264,7 @@ class MultiTXNProducer(BaseProducer):
             self._max_batch_size, 
             self._compression_attrs,
             self._request_timeout_ms / 1000,
-            txn_manager=None,
-            loop=self._loop)
+            txn_manager=None)
 
         self._sender = Sender(
             self.client,
@@ -1398,7 +1389,6 @@ class MultiTXNProducer(BaseProducer):
             self._compression_attrs,
             self._request_timeout_ms / 1000,
             txn_manager=txn_manager,
-            loop=self._loop,
         )
         accumulator.set_api_version(self._received_api_version)
         sender = self._senders[tid] = Sender(
@@ -1422,7 +1412,6 @@ class MultiTXNProducer(BaseProducer):
 
         await asyncio.shield(
             txn_manager.wait_for_pid(),
-            loop=self._loop,
         )
         txn_manager.begin_transaction()
 
@@ -1433,7 +1422,6 @@ class MultiTXNProducer(BaseProducer):
         txn_manager.committing_transaction()
         await asyncio.shield(
             txn_manager.wait_for_transaction_end(),
-            loop=self._loop,
         )
 
     async def abort_transaction(self, transactional_id):
@@ -1443,7 +1431,6 @@ class MultiTXNProducer(BaseProducer):
         txn_manager.aborting_transaction()
         await asyncio.shield(
             txn_manager.wait_for_transaction_end(),
-            loop=self._loop,
         )
 
     async def stop_transaction(self, transactional_id):
@@ -1455,7 +1442,6 @@ class MultiTXNProducer(BaseProducer):
                 txn_manager.aborting_transaction()
                 await asyncio.shield(
                     txn_manager.wait_for_transaction_end(),
-                    loop=self._loop,
                 )
         await self._wait_for_sender1(sender, accumulator)
 
@@ -1470,7 +1456,6 @@ class MultiTXNProducer(BaseProducer):
             "Beginning a new transaction for id %s", transactional_id)
         await asyncio.shield(
             txn_manager.wait_for_pid(),
-            loop=self._loop,
         )
         txn_manager.begin_transaction()
 
@@ -1492,7 +1477,7 @@ class MultiTXNProducer(BaseProducer):
             formatted_offsets, group_id)
         fut = txn_manager.add_offsets_to_txn(formatted_offsets, group_id)
         self.log.debug('+WAIT FOR RESPONSE OR ERROR %r' % (fut,))
-        await asyncio.shield(fut, loop=self._loop)
+        await asyncio.shield(fut)
         self.log.debug('-WAIT FOR RESPONSE OR ERROR %r' % (fut,))
 
 
@@ -1572,7 +1557,6 @@ class Producer(base.Producer):
 
     def _new_producer(self) -> aiokafka.AIOKafkaProducer:
         return self._producer_type(
-            loop=self.loop,
             **{**self._settings_default(),
                **self._settings_auth(),
                **self._settings_extra()},
@@ -1765,7 +1749,7 @@ class Transport(base.Transport):
                 topic,
                 partitions,
                 replication,
-                loop=asyncio.get_event_loop(), **kwargs)
+                **kwargs)
         try:
             await wrap()
         except Exception:

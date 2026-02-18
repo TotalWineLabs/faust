@@ -103,7 +103,7 @@ class TestExecution(Record, isodates=True):
         return f'{case_name}:{id}'
 
     def _now(self) -> datetime:
-        return datetime.utcnow().astimezone(timezone.utc)
+        return datetime.now(timezone.utc)
 
     @cached_property
     def human_date(self) -> str:

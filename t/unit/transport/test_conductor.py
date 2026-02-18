@@ -80,7 +80,7 @@ class test_Conductor:
         with patch('asyncio.Future', AsyncMock()) as Future:
             con._subscription_done = None
             await con.wait_for_subscriptions()
-            Future.assert_called_once_with(loop=con.loop)
+            Future.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_wait_for_subscriptions__done(self, *, con):
