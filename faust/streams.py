@@ -12,6 +12,7 @@ from typing import (
     AsyncIterable,
     AsyncIterator,
     Callable,
+    Deque,
     Dict,
     Iterable,
     Iterator,
@@ -31,7 +32,6 @@ from mode import Seconds, Service, get_logger, shortlabel, want_seconds
 from mode.utils.aiter import aenumerate, aiter
 from mode.utils.futures import current_task, maybe_async, notify
 from mode.utils.queues import ThrowableQueue
-from mode.utils.typing import Deque
 from mode.utils.types.trees import NodeT
 
 from . import joins

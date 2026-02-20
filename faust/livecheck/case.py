@@ -20,11 +20,12 @@ from typing import (
     cast,
 )
 
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator, Counter, Deque
+
 from aiohttp import ClientError, ClientTimeout
 from mode import Seconds, Service, want_seconds
-from mode.utils.contexts import asynccontextmanager
 from mode.utils.times import humanize_seconds
-from mode.utils.typing import AsyncGenerator, Counter, Deque
 from yarl import URL
 
 from faust.utils import uuid

@@ -29,6 +29,7 @@ from typing import (
     Mapping,
     MutableMapping,
     MutableSequence,
+    NoReturn,
     Optional,
     Pattern,
     Set,
@@ -44,13 +45,12 @@ import opentracing
 
 from mode import Seconds, Service, ServiceT, SupervisorStrategyT, want_seconds
 from mode.utils.aiter import aiter
+from contextlib import nullcontext
 from mode.utils.collections import force_mapping
-from mode.utils.contexts import nullcontext
 from mode.utils.futures import stampede
 from mode.utils.imports import import_from_cwd, smart_import
 from mode.utils.logging import flight_recorder, get_logger
 from mode.utils.objects import cached_property, qualname, shortlabel
-from mode.utils.typing import NoReturn
 from mode.utils.queues import FlowControlEvent, ThrowableQueue
 from mode.utils.types.trees import NodeT
 

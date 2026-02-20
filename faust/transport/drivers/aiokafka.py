@@ -13,6 +13,7 @@ from typing import (
     Awaitable,
     Callable,
     ClassVar,
+    Deque,
     Iterable,
     List,
     Mapping,
@@ -47,13 +48,12 @@ from aiokafka import TopicPartition
 from aiokafka.coordinator.assignors.roundrobin import RoundRobinPartitionAssignor
 from aiokafka.partitioner import DefaultPartitioner, murmur2
 from aiokafka.protocol.admin import CreateTopicsRequest
-from aiokafka.protocol.metadata import MetadataRequest_v1
+from aiokafka.protocol.metadata import MetadataRequest
 from mode import Service, get_logger
 from mode.utils.futures import StampedeWrapper
 from mode.utils.objects import cached_property
 from mode.utils import text
 from mode.utils.times import Seconds, humanize_seconds_ago, want_seconds
-from mode.utils.typing import Deque
 from opentracing.ext import tags
 from yarl import URL
 
@@ -367,7 +367,6 @@ class AIOKafkaConsumerThread(ConsumerThread):
                 f'broker_request_timeout={request_timeout}')
 
         return aiokafka.AIOKafkaConsumer(
-            api_version=conf.consumer_api_version,
             client_id=conf.broker_client_id,
             group_id=conf.id,
             group_instance_id=conf.consumer_group_instance_id,
@@ -389,7 +388,9 @@ class AIOKafkaConsumerThread(ConsumerThread):
             **auth_settings,
         )
 
-    def _create_client_consumer(\n            self,\n            transport: 'Transport') -> aiokafka.AIOKafkaConsumer:
+    def _create_client_consumer(
+            self,
+            transport: 'Transport') -> aiokafka.AIOKafkaConsumer:
         conf = self.app.conf
         auth_settings = credentials_to_aiokafka_auth(
             conf.broker_credentials, conf.ssl_context)
@@ -908,7 +909,7 @@ class BaseProducer(abc.ABC):
 
     def __init__(self, 
                  *, 
-                 loop, 
+                 loop=None, 
                  bootstrap_servers='localhost',
                  client_id=None,
                  metadata_max_age_ms=300000, 
@@ -977,7 +978,7 @@ class BaseProducer(abc.ABC):
         self._client_id = client_id
         self._metadata_max_age_ms = metadata_max_age_ms
         self._request_timeout_ms = request_timeout_ms
-        self._api_version = api_version
+        self._api_version = api_version if api_version != 'auto' else (2, 0, 0)
         self._acks = acks
         self._key_serializer = key_serializer
         self._value_serializer = value_serializer
@@ -1004,7 +1005,6 @@ class BaseProducer(abc.ABC):
             metadata_max_age_ms=metadata_max_age_ms,
             request_timeout_ms=request_timeout_ms,
             retry_backoff_ms=retry_backoff_ms,
-            api_version=api_version, 
             security_protocol=security_protocol,
             ssl_context=ssl_context,
             connections_max_idle_ms=connections_max_idle_ms,
@@ -1072,7 +1072,7 @@ class BaseProducer(abc.ABC):
         await self.client.bootstrap()
         if self._closed:
             return
-        api_version = self.client.api_version
+        api_version = getattr(self.client, 'api_version', self._api_version)
 
         self._verify_api_version(api_version)
         await self._start_sender()
@@ -1083,11 +1083,11 @@ class BaseProducer(abc.ABC):
 
     def _verify_api_version(self, api_version):
         if self._compression_type == "lz4":
-            assert self.client.api_version >= (0, 8, 2), (
+            assert api_version >= (0, 8, 2), (
                 "LZ4 Requires >= Kafka 0.8.2 Brokers"
             )  # fmt: skip
         elif self._compression_type == "zstd":
-            assert self.client.api_version >= (2, 1, 0), (
+            assert api_version >= (2, 1, 0), (
                 "Zstd Requires >= Kafka 2.1.0 Brokers"
             )  # fmt: skip
 
@@ -1185,7 +1185,7 @@ class BaseProducer(abc.ABC):
             from being sent, but cancelling the ``send`` coroutine itself
             **will**.
         """
-        assert value is not None or self.client.api_version >= (0, 8, 1), (
+        assert value is not None or self._api_version >= (0, 8, 1), (
             'Null messages require kafka >= 0.8.1')
         assert not (value is None and key is None), \
             'Need at least one: key or value'
@@ -1198,7 +1198,7 @@ class BaseProducer(abc.ABC):
         self._verify_txn_started(transactional_id)
 
         if headers is not None:
-            if self.client.api_version < (0, 11):
+            if self._api_version < (0, 11):
                 raise UnsupportedVersionError(
                     "Headers not supported before Kafka 0.11")
         else:
@@ -1235,7 +1235,6 @@ class MultiTXNProducer(BaseProducer):
     _received_api_version: str = None
 
     def __init__(self, *,
-                 loop,
                  bootstrap_servers='localhost',
                  acks=_missing,
                  enable_idempotence=False,
@@ -1315,8 +1314,10 @@ class MultiTXNProducer(BaseProducer):
     def _on_set_api_version(self, api_version):
         self._received_api_version = api_version
         for accumulator in self._accumulators.values():
-            accumulator.set_api_version(api_version)
-        self._message_accumulator.set_api_version(api_version)
+            if hasattr(accumulator, 'set_api_version'):
+                accumulator.set_api_version(api_version)
+        if hasattr(self._message_accumulator, 'set_api_version'):
+            self._message_accumulator.set_api_version(api_version)
 
     def _message_accumulator_for(self, transactional_id, tp):
         if transactional_id is None:
@@ -1339,7 +1340,7 @@ class MultiTXNProducer(BaseProducer):
 
     def _verify_api_version(self, api_version):
         super()._verify_api_version(api_version)
-        if self.client.api_version < (0, 11):
+        if api_version < (0, 11):
             raise UnsupportedVersionError(
                 "MultiTXNProducer available only for Broker version 0.11"
                 " and above")
@@ -1390,7 +1391,8 @@ class MultiTXNProducer(BaseProducer):
             self._request_timeout_ms / 1000,
             txn_manager=txn_manager,
         )
-        accumulator.set_api_version(self._received_api_version)
+        if hasattr(accumulator, 'set_api_version'):
+            accumulator.set_api_version(self._received_api_version)
         sender = self._senders[tid] = Sender(
             self.client,
             acks=self._acks,
@@ -1765,7 +1767,7 @@ class Transport(base.Transport):
         for node_id in nodes:
             if node_id is None:
                 raise NotReady('Not connected to Kafka Broker')
-            request = MetadataRequest_v1([])
+            request = MetadataRequest(topics=[])
             wait_result = await owner.wait(
                 client.send(node_id, request),
                 timeout=timeout,
@@ -1813,10 +1815,12 @@ class Transport(base.Transport):
             else:
                 raise Exception('Controller node is None')
 
-        request = CreateTopicsRequest[protocol_version](
-            [(topic, partitions, replication, [], list(config.items()))],
-            timeout,
-            False,
+        request = CreateTopicsRequest(
+            create_topic_requests=[
+                (topic, partitions, replication, [], list(config.items()))
+            ],
+            timeout=timeout,
+            validate_only=False,
         )
         wait_result = await owner.wait(
             client.send(controller_node, request),

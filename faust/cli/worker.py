@@ -50,7 +50,7 @@ class worker(AppCommand):
                default=None, type=float,
                help=f'Memory consumption percentage that triggers shutdown '
                     f'(default: {SHUTDOWN_MEMORY_PERCENT})'),
-        option('--shutdown-memory-bytes', '-s',
+        option('--shutdown-memory-bytes',
                default=None, type=float,
                help=f'Memory consumption bytes that triggers shutdown '
                     f'(default: {SHUTDOWN_MEMORY_BYTES})'),                    
@@ -63,7 +63,7 @@ class worker(AppCommand):
         """Print banner when worker starts."""
         self.say(self.banner(worker))
 
-    def as_service(self, loop: asyncio.AbstractEventLoop,
+    def as_service(self,
                    *args: Any, **kwargs: Any) -> ServiceT:
         """Return the service this command should execute.
 

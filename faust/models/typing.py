@@ -44,7 +44,7 @@ from mode.utils.objects import (
     is_union,
     qualname,
 )
-from mode.utils.typing import Counter
+from typing import Counter
 from faust.types.models import (
     CoercionHandler,
     CoercionMapping,

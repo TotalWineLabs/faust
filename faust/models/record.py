@@ -16,7 +16,8 @@ from typing import (
     cast,
 )
 
-from mode.utils.compat import OrderedDict
+from collections import OrderedDict
+
 from mode.utils.objects import (
     annotations,
     is_optional,

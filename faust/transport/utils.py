@@ -10,7 +10,8 @@ from typing import (
     Set,
     Tuple,
 )
-from mode.utils.compat import OrderedDict
+from collections import OrderedDict
+
 from faust.types import TP
 from faust.types.transports import SchedulingStrategyT
 

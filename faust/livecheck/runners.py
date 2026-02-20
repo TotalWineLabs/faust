@@ -15,9 +15,10 @@ from typing import (
     Tuple,
 )
 
+from typing import NoReturn
+
 from mode.utils.logging import CompositeLogger
 from mode.utils.times import humanize_seconds
-from mode.utils.typing import NoReturn
 
 from faust.models import maybe_model
 
