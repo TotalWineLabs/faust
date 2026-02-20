@@ -597,7 +597,8 @@ class Recovery(Service):
             for table in self.tables.values()
         ]
         if callback_coros:
-            await asyncio.wait(callback_coros)
+            tasks = [asyncio.ensure_future(c) for c in callback_coros]
+            await asyncio.wait(tasks)
         assignment = consumer.assignment()
         if assignment:
             self.log.info('Seek stream partitions to committed offsets.')

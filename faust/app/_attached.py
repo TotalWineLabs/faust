@@ -162,10 +162,13 @@ class Attachments:
 
     async def commit(self, tp: TP, offset: int) -> None:
         """Publish all messaged attached to topic partition and offset."""
-        await asyncio.wait(
-            await self.publish_for_tp_offset(tp, offset),
-            return_when=asyncio.ALL_COMPLETED,
-        )
+        awaitables = await self.publish_for_tp_offset(tp, offset)
+        if awaitables:
+            await asyncio.wait(
+                [asyncio.ensure_future(a) if asyncio.iscoroutine(a) else a
+                 for a in awaitables],
+                return_when=asyncio.ALL_COMPLETED,
+            )
 
     async def publish_for_tp_offset(
             self, tp: TP, offset: int) -> List[Awaitable[RecordMetadata]]:
