@@ -74,13 +74,22 @@ class TableManager(Service, TableManagerT):
     def on_commit(self, offsets: MutableMapping[TP, int]) -> None:
         """Call when committing source topic partitions."""
         # flush any pending persisted offsets added by
-        # persist_offset_on_commit
-        for tp in offsets:
-            self.on_commit_tp(tp)
+        # persist_offset_on_commit.
+        #
+        # Note: _pending_persisted_offsets is keyed by changelog topic
+        # partitions (set in _on_changelog_sent), while `offsets` contains
+        # source topic partitions. In exactly_once mode, a successful
+        # commit means all changelog messages produced in the transaction
+        # are also committed, so we flush all pending changelog offsets.
+        pending = self._pending_persisted_offsets
+        if pending:
+            for tp in list(pending.keys()):
+                store, offset = pending.pop(tp)
+                store.set_persisted_offset(tp, offset)
 
     def on_commit_tp(self, tp: TP) -> None:
         """Call when committing source topic partition used by this table."""
-        entry = self._pending_persisted_offsets.get(tp)
+        entry = self._pending_persisted_offsets.pop(tp, None)
         if entry is not None:
             store, offset = entry
             store.set_persisted_offset(tp, offset)

@@ -26,9 +26,20 @@ class test_Manager:
         assert tables._pending_persisted_offsets[TP1] == (store, 31)
 
     def test_on_commit(self, *, tables):
-        tables.on_commit_tp = Mock(name='on_commit_tp')
+        # _pending_persisted_offsets is keyed by changelog TPs, not source TPs.
+        # on_commit should flush all pending persisted offsets regardless of
+        # which source TPs are in the offsets argument.
+        store = Mock(name='store')
+        changelog_tp = TP('app-table-changelog', 3)
+        tables.persist_offset_on_commit(store, changelog_tp, 30)
+        # on_commit is called with source TPs (different from changelog TPs)
         tables.on_commit({TP1: 30})
-        tables.on_commit_tp.assert_called_once_with(TP1)
+        store.set_persisted_offset.assert_called_once_with(changelog_tp, 30)
+        assert changelog_tp not in tables._pending_persisted_offsets
+
+    def test_on_commit_no_pending(self, *, tables):
+        # on_commit with no pending offsets should be a no-op
+        tables.on_commit({TP1: 30})
 
     def test_on_commit_tp(self, *, tables):
         store = Mock(name='store')
@@ -36,6 +47,7 @@ class test_Manager:
         tables.persist_offset_on_commit(store, TP1, 30)
         tables.on_commit_tp(TP1)
         store.set_persisted_offset.assert_called_once_with(TP1, 30)
+        assert TP1 not in tables._pending_persisted_offsets
 
     def test_on_rebalance_start(self, *, tables):
         tables.on_rebalance_start()
