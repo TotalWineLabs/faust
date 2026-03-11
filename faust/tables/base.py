@@ -193,7 +193,6 @@ class Collection(Service, CollectionT):
             key_serializer=self.key_serializer,
             value_serializer=self.value_serializer,
             value_type=self.value_type,
-            loop=self.loop,
             options=self.options,
         )
 

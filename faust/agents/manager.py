@@ -6,8 +6,9 @@ from typing import Any, Dict, List, Mapping, MutableMapping, MutableSet, Set
 from weakref import WeakSet
 
 from mode import Service
+from collections import OrderedDict
+
 from mode.utils.collections import ManagedUserDict
-from mode.utils.compat import OrderedDict
 from mode.utils.locks import Event
 
 from faust.types import AgentManagerT, AgentT, AppT

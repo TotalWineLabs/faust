@@ -119,7 +119,6 @@ class ProducerT(ServiceT):
 
     @abc.abstractmethod
     def __init__(self, transport: 'TransportT',
-                 loop: asyncio.AbstractEventLoop = None,
                  **kwargs: Any) -> None:
         ...
 
@@ -209,7 +208,6 @@ class TransactionManagerT(ProducerT):
     @abc.abstractmethod
     def __init__(self,
                  transport: 'TransportT',
-                 loop: asyncio.AbstractEventLoop = None,
                  *,
                  consumer: 'ConsumerT',
                  producer: 'ProducerT',
@@ -294,7 +292,6 @@ class ConsumerT(ServiceT):
                  on_partitions_assigned: PartitionsAssignedCallback,
                  *,
                  commit_interval: float = None,
-                 loop: asyncio.AbstractEventLoop = None,
                  **kwargs: Any) -> None:
         self._on_partitions_revoked: PartitionsRevokedCallback
         self._on_partitions_assigned: PartitionsAssignedCallback
@@ -486,13 +483,10 @@ class TransportT(abc.ABC):
     #: E.g. for :pypi:`aiokafka` this could be ``aiokafka 0.4.1``.
     driver_version: str
 
-    loop: asyncio.AbstractEventLoop
-
     @abc.abstractmethod
     def __init__(self,
                  url: List[URL],
-                 app: _AppT,
-                 loop: asyncio.AbstractEventLoop = None) -> None:
+                 app: _AppT) -> None:
         ...
 
     @abc.abstractmethod

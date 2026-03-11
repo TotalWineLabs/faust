@@ -122,7 +122,7 @@ class ConductorCompiler:  # pragma: no cover
                         for _, dest_chan in full:
                             on_topic_buffer_full(dest_chan)
                         await asyncio.wait(
-                            [dest_chan.put(dest_event)
+                            [asyncio.ensure_future(dest_chan.put(dest_event))
                              for dest_event, dest_chan in full],
                             return_when=asyncio.ALL_COMPLETED,
                         )
@@ -239,7 +239,7 @@ class Conductor(ConductorT, Service):
             notify(self._subscription_done)
 
             # Now we wait for changes
-            ev = self._subscription_changed = asyncio.Event(loop=self.loop)
+            ev = self._subscription_changed = asyncio.Event()
         while not self.should_stop:
             # Wait for something to add/remove topics from subscription.
             await ev.wait()
@@ -265,7 +265,7 @@ class Conductor(ConductorT, Service):
     async def wait_for_subscriptions(self) -> None:
         """Wait for consumer to be subscribed."""
         if self._subscription_done is None:
-            self._subscription_done = asyncio.Future(loop=self.loop)
+            self._subscription_done = asyncio.Future()
         await self._subscription_done
 
     async def maybe_wait_for_subscriptions(self) -> None:
@@ -370,7 +370,7 @@ class Conductor(ConductorT, Service):
         if self._subscription_changed is not None:
             self._subscription_changed.set()
         if self._subscription_done is None:
-            self._subscription_done = asyncio.Future(loop=self.loop)
+            self._subscription_done = asyncio.Future()
 
     @property
     def label(self) -> str:

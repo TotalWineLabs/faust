@@ -249,8 +249,7 @@ class AppT(ServiceT):
               config: Mapping[str, Any] = None,
               maxsize: int = None,
               allow_empty: bool = False,
-              has_prefix: bool = False,
-              loop: asyncio.AbstractEventLoop = None) -> TopicT:
+              has_prefix: bool = False) -> TopicT:
         ...
 
     @abc.abstractmethod
@@ -259,8 +258,7 @@ class AppT(ServiceT):
                 schema: _SchemaT = None,
                 key_type: _ModelArg = None,
                 value_type: _ModelArg = None,
-                maxsize: int = None,
-                loop: asyncio.AbstractEventLoop = None) -> ChannelT:
+                maxsize: int = None) -> ChannelT:
         ...
 
     @abc.abstractmethod
@@ -432,8 +430,7 @@ class AppT(ServiceT):
             self,
             maxsize: int = None,
             *,
-            clear_on_resume: bool = False,
-            loop: asyncio.AbstractEventLoop = None) -> ThrowableQueue:
+            clear_on_resume: bool = False) -> ThrowableQueue:
         ...
 
     @abc.abstractmethod
@@ -523,7 +520,7 @@ class AppT(ServiceT):
     @cached_property
     @abc.abstractmethod
     def flow_control(self) -> FlowControlEvent:
-        return FlowControlEvent(loop=self.loop)
+        return FlowControlEvent()
 
     @property
     @abc.abstractmethod

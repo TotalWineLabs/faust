@@ -662,8 +662,7 @@ class test_AIOKafkaConsumerThread(AIOKafkaConsumerThreadFixtures):
         await cthread.on_start()
 
         assert cthread._consumer is cthread._create_consumer.return_value
-        cthread._create_consumer.assert_called_once_with(
-            loop=cthread.thread_loop)
+        cthread._create_consumer.assert_called_once_with()
         cthread._consumer.start.assert_called_once_with()
 
     @pytest.mark.asyncio
@@ -681,19 +680,19 @@ class test_AIOKafkaConsumerThread(AIOKafkaConsumerThreadFixtures):
         app.client_only = True
         loop = Mock(name='loop')
         cthread._create_client_consumer = Mock(name='_create_client_consumer')
-        c = cthread._create_consumer(loop=loop)
+        c = cthread._create_consumer()
         assert c is cthread._create_client_consumer.return_value
         cthread._create_client_consumer.assert_called_once_with(
-            cthread.transport, loop=loop)
+            cthread.transport)
 
     def test__create_consumer__worker(self, *, cthread, app):
         app.client_only = False
         loop = Mock(name='loop')
         cthread._create_worker_consumer = Mock(name='_create_worker_consumer')
-        c = cthread._create_consumer(loop=loop)
+        c = cthread._create_consumer()
         assert c is cthread._create_worker_consumer.return_value
         cthread._create_worker_consumer.assert_called_once_with(
-            cthread.transport, loop=loop)
+            cthread.transport)
 
     def test_session_gt_request_timeout(self, *, cthread, app):
         app.conf.broker_session_timeout = 90
@@ -733,7 +732,6 @@ class test_AIOKafkaConsumerThread(AIOKafkaConsumerThreadFixtures):
             assert c is AIOKafkaConsumer.return_value
             max_poll_interval = conf.broker_max_poll_interval
             AIOKafkaConsumer.assert_called_once_with(
-                loop=loop,
                 api_version=app.conf.consumer_api_version,
                 client_id=conf.broker_client_id,
                 group_id=conf.id,
@@ -773,7 +771,6 @@ class test_AIOKafkaConsumerThread(AIOKafkaConsumerThreadFixtures):
             max_poll_interval = conf.broker_max_poll_interval
             assert c is AIOKafkaConsumer.return_value
             AIOKafkaConsumer.assert_called_once_with(
-                loop=loop,
                 client_id=conf.broker_client_id,
                 bootstrap_servers=server_list(
                     transport.url, transport.default_port),
@@ -1369,7 +1366,6 @@ class test_Producer:
                 max_request_size=max_request_size,
                 request_timeout_ms=request_timeout_ms,
                 security_protocol=security_protocol,
-                loop=producer.loop,
                 partitioner=producer.partitioner,
                 **kwargs,
             )
@@ -1658,7 +1654,6 @@ class test_Transport:
                 'foo',
                 100,
                 3,
-                loop=loop,
             )
             SW.return_value.coro.assert_called_once_with()
             assert transport._topic_waiters['foo'] is SW.return_value

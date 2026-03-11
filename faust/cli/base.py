@@ -20,6 +20,7 @@ from typing import (
     List,
     Mapping,
     MutableSequence,
+    NoReturn,
     Optional,
     Sequence,
     Tuple,
@@ -36,7 +37,6 @@ from mode import Service, ServiceT, Worker
 from mode.utils import text
 from mode.utils.compat import want_bytes
 from mode.utils.imports import import_from_cwd, symbol_by_name
-from mode.utils.typing import NoReturn
 from mode.worker import exiting
 
 from faust.types._env import (
@@ -613,11 +613,10 @@ class Command(abc.ABC):
 
     def run_using_worker(self, *args: Any, **kwargs: Any) -> NoReturn:
         """Execute command using :class:`faust.Worker`."""
-        loop = asyncio.get_event_loop()
         args = self.args + args
         kwargs = {**self.kwargs, **kwargs}
-        service = self.as_service(loop, *args, **kwargs)
-        worker = self.worker_for_service(service, loop)
+        service = self.as_service(*args, **kwargs)
+        worker = self.worker_for_service(service)
         self.on_worker_created(worker)
         raise worker.execute_from_commandline()
 
@@ -626,17 +625,14 @@ class Command(abc.ABC):
         ...
 
     def as_service(self,
-                   loop: asyncio.AbstractEventLoop,
                    *args: Any, **kwargs: Any) -> ServiceT:
         """Wrap command in a :class:`mode.Service` object."""
         return Service.from_awaitable(
             self.execute(*args, **kwargs),
-            name=type(self).__name__,
-            loop=loop or asyncio.get_event_loop())
+            name=type(self).__name__)
 
     def worker_for_service(self,
-                           service: ServiceT,
-                           loop: asyncio.AbstractEventLoop = None) -> Worker:
+                           service: ServiceT) -> Worker:
         """Create :class:`faust.Worker` instance for this command."""
         return self._Worker(
             service,
@@ -650,7 +646,6 @@ class Command(abc.ABC):
             console_port=self.console_port,
             redirect_stdouts=self.redirect_stdouts or False,
             redirect_stdouts_level=self.redirect_stdouts_level,
-            loop=loop or asyncio.get_event_loop(),
             daemon=self.daemon,
         )
 

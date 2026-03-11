@@ -138,8 +138,7 @@ class StreamT(AsyncIterable[T_co], JoinableT, ServiceT):
                  prev: 'StreamT' = None,
                  active_partitions: Set[TP] = None,
                  enable_acks: bool = True,
-                 prefix: str = '',
-                 loop: asyncio.AbstractEventLoop = None) -> None:
+                 prefix: str = '') -> None:
         ...
 
     @abc.abstractmethod

@@ -13,6 +13,7 @@ from typing import (
     Awaitable,
     Callable,
     ClassVar,
+    Deque,
     Iterable,
     List,
     Mapping,
@@ -47,13 +48,12 @@ from aiokafka import TopicPartition
 from aiokafka.coordinator.assignors.roundrobin import RoundRobinPartitionAssignor
 from aiokafka.partitioner import DefaultPartitioner, murmur2
 from aiokafka.protocol.admin import CreateTopicsRequest
-from aiokafka.protocol.metadata import MetadataRequest_v1
+from aiokafka.protocol.metadata import MetadataRequest
 from mode import Service, get_logger
 from mode.utils.futures import StampedeWrapper
 from mode.utils.objects import cached_property
 from mode.utils import text
 from mode.utils.times import Seconds, humanize_seconds_ago, want_seconds
-from mode.utils.typing import Deque
 from opentracing.ext import tags
 from yarl import URL
 
@@ -232,7 +232,7 @@ class Consumer(ThreadDelegateConsumer):
     )
 
     def _new_consumer_thread(self) -> ConsumerThread:
-        return AIOKafkaConsumerThread(self, loop=self.loop, beacon=self.beacon)
+        return AIOKafkaConsumerThread(self, beacon=self.beacon)
 
     async def create_topic(self,
                            topic: str,
@@ -320,7 +320,7 @@ class AIOKafkaConsumerThread(ConsumerThread):
 
     async def on_start(self) -> None:
         """Call when consumer starts."""
-        self._consumer = self._create_consumer(loop=self.thread_loop)
+        self._consumer = self._create_consumer()
         self.time_started = monotonic()
         await self._consumer.start()
 
@@ -333,18 +333,16 @@ class AIOKafkaConsumerThread(ConsumerThread):
             await self._consumer.stop()
 
     def _create_consumer(
-            self,
-            loop: asyncio.AbstractEventLoop) -> aiokafka.AIOKafkaConsumer:
+            self) -> aiokafka.AIOKafkaConsumer:
         transport = cast(Transport, self.transport)
         if self.app.client_only:
-            return self._create_client_consumer(transport, loop=loop)
+            return self._create_client_consumer(transport)
         else:
-            return self._create_worker_consumer(transport, loop=loop)
+            return self._create_worker_consumer(transport)
 
     def _create_worker_consumer(
             self,
-            transport: 'Transport',
-            loop: asyncio.AbstractEventLoop) -> aiokafka.AIOKafkaConsumer:
+            transport: 'Transport') -> aiokafka.AIOKafkaConsumer:
         isolation_level: str = 'read_uncommitted'
         conf = self.app.conf
         if self.consumer.in_transaction:
@@ -369,8 +367,6 @@ class AIOKafkaConsumerThread(ConsumerThread):
                 f'broker_request_timeout={request_timeout}')
 
         return aiokafka.AIOKafkaConsumer(
-            loop=loop,
-            api_version=conf.consumer_api_version,
             client_id=conf.broker_client_id,
             group_id=conf.id,
             group_instance_id=conf.consumer_group_instance_id,
@@ -394,8 +390,7 @@ class AIOKafkaConsumerThread(ConsumerThread):
 
     def _create_client_consumer(
             self,
-            transport: 'Transport',
-            loop: asyncio.AbstractEventLoop) -> aiokafka.AIOKafkaConsumer:
+            transport: 'Transport') -> aiokafka.AIOKafkaConsumer:
         conf = self.app.conf
         auth_settings = credentials_to_aiokafka_auth(
             conf.broker_credentials, conf.ssl_context)
@@ -914,7 +909,7 @@ class BaseProducer(abc.ABC):
 
     def __init__(self, 
                  *, 
-                 loop, 
+                 loop=None, 
                  bootstrap_servers='localhost',
                  client_id=None,
                  metadata_max_age_ms=300000, 
@@ -983,7 +978,7 @@ class BaseProducer(abc.ABC):
         self._client_id = client_id
         self._metadata_max_age_ms = metadata_max_age_ms
         self._request_timeout_ms = request_timeout_ms
-        self._api_version = api_version
+        self._api_version = api_version if api_version != 'auto' else (2, 0, 0)
         self._acks = acks
         self._key_serializer = key_serializer
         self._value_serializer = value_serializer
@@ -1005,13 +1000,11 @@ class BaseProducer(abc.ABC):
         self._sasl_kerberos_domain_name = sasl_kerberos_domain_name
 
         self.client = AIOKafkaClient(
-            loop=loop, 
             bootstrap_servers=bootstrap_servers,
             client_id=client_id, 
             metadata_max_age_ms=metadata_max_age_ms,
             request_timeout_ms=request_timeout_ms,
             retry_backoff_ms=retry_backoff_ms,
-            api_version=api_version, 
             security_protocol=security_protocol,
             ssl_context=ssl_context,
             connections_max_idle_ms=connections_max_idle_ms,
@@ -1079,7 +1072,7 @@ class BaseProducer(abc.ABC):
         await self.client.bootstrap()
         if self._closed:
             return
-        api_version = self.client.api_version
+        api_version = getattr(self.client, 'api_version', self._api_version)
 
         self._verify_api_version(api_version)
         await self._start_sender()
@@ -1090,11 +1083,11 @@ class BaseProducer(abc.ABC):
 
     def _verify_api_version(self, api_version):
         if self._compression_type == "lz4":
-            assert self.client.api_version >= (0, 8, 2), (
+            assert api_version >= (0, 8, 2), (
                 "LZ4 Requires >= Kafka 0.8.2 Brokers"
             )  # fmt: skip
         elif self._compression_type == "zstd":
-            assert self.client.api_version >= (2, 1, 0), (
+            assert api_version >= (2, 1, 0), (
                 "Zstd Requires >= Kafka 2.1.0 Brokers"
             )  # fmt: skip
 
@@ -1192,7 +1185,7 @@ class BaseProducer(abc.ABC):
             from being sent, but cancelling the ``send`` coroutine itself
             **will**.
         """
-        assert value is not None or self.client.api_version >= (0, 8, 1), (
+        assert value is not None or self._api_version >= (0, 8, 1), (
             'Null messages require kafka >= 0.8.1')
         assert not (value is None and key is None), \
             'Need at least one: key or value'
@@ -1205,7 +1198,7 @@ class BaseProducer(abc.ABC):
         self._verify_txn_started(transactional_id)
 
         if headers is not None:
-            if self.client.api_version < (0, 11):
+            if self._api_version < (0, 11):
                 raise UnsupportedVersionError(
                     "Headers not supported before Kafka 0.11")
         else:
@@ -1242,7 +1235,6 @@ class MultiTXNProducer(BaseProducer):
     _received_api_version: str = None
 
     def __init__(self, *,
-                 loop,
                  bootstrap_servers='localhost',
                  acks=_missing,
                  enable_idempotence=False,
@@ -1257,7 +1249,6 @@ class MultiTXNProducer(BaseProducer):
                 .format(acks))
 
         super().__init__(
-            loop=loop,
             bootstrap_servers=bootstrap_servers,
             acks=acks,
             transaction_timeout_ms=transaction_timeout_ms,
@@ -1272,8 +1263,7 @@ class MultiTXNProducer(BaseProducer):
             self._max_batch_size, 
             self._compression_attrs,
             self._request_timeout_ms / 1000,
-            txn_manager=None,
-            loop=self._loop)
+            txn_manager=None)
 
         self._sender = Sender(
             self.client,
@@ -1324,8 +1314,10 @@ class MultiTXNProducer(BaseProducer):
     def _on_set_api_version(self, api_version):
         self._received_api_version = api_version
         for accumulator in self._accumulators.values():
-            accumulator.set_api_version(api_version)
-        self._message_accumulator.set_api_version(api_version)
+            if hasattr(accumulator, 'set_api_version'):
+                accumulator.set_api_version(api_version)
+        if hasattr(self._message_accumulator, 'set_api_version'):
+            self._message_accumulator.set_api_version(api_version)
 
     def _message_accumulator_for(self, transactional_id, tp):
         if transactional_id is None:
@@ -1348,7 +1340,7 @@ class MultiTXNProducer(BaseProducer):
 
     def _verify_api_version(self, api_version):
         super()._verify_api_version(api_version)
-        if self.client.api_version < (0, 11):
+        if api_version < (0, 11):
             raise UnsupportedVersionError(
                 "MultiTXNProducer available only for Broker version 0.11"
                 " and above")
@@ -1398,9 +1390,9 @@ class MultiTXNProducer(BaseProducer):
             self._compression_attrs,
             self._request_timeout_ms / 1000,
             txn_manager=txn_manager,
-            loop=self._loop,
         )
-        accumulator.set_api_version(self._received_api_version)
+        if hasattr(accumulator, 'set_api_version'):
+            accumulator.set_api_version(self._received_api_version)
         sender = self._senders[tid] = Sender(
             self.client,
             acks=self._acks,
@@ -1422,7 +1414,6 @@ class MultiTXNProducer(BaseProducer):
 
         await asyncio.shield(
             txn_manager.wait_for_pid(),
-            loop=self._loop,
         )
         txn_manager.begin_transaction()
 
@@ -1433,7 +1424,6 @@ class MultiTXNProducer(BaseProducer):
         txn_manager.committing_transaction()
         await asyncio.shield(
             txn_manager.wait_for_transaction_end(),
-            loop=self._loop,
         )
 
     async def abort_transaction(self, transactional_id):
@@ -1443,7 +1433,6 @@ class MultiTXNProducer(BaseProducer):
         txn_manager.aborting_transaction()
         await asyncio.shield(
             txn_manager.wait_for_transaction_end(),
-            loop=self._loop,
         )
 
     async def stop_transaction(self, transactional_id):
@@ -1455,7 +1444,6 @@ class MultiTXNProducer(BaseProducer):
                 txn_manager.aborting_transaction()
                 await asyncio.shield(
                     txn_manager.wait_for_transaction_end(),
-                    loop=self._loop,
                 )
         await self._wait_for_sender1(sender, accumulator)
 
@@ -1470,7 +1458,6 @@ class MultiTXNProducer(BaseProducer):
             "Beginning a new transaction for id %s", transactional_id)
         await asyncio.shield(
             txn_manager.wait_for_pid(),
-            loop=self._loop,
         )
         txn_manager.begin_transaction()
 
@@ -1492,7 +1479,7 @@ class MultiTXNProducer(BaseProducer):
             formatted_offsets, group_id)
         fut = txn_manager.add_offsets_to_txn(formatted_offsets, group_id)
         self.log.debug('+WAIT FOR RESPONSE OR ERROR %r' % (fut,))
-        await asyncio.shield(fut, loop=self._loop)
+        await asyncio.shield(fut)
         self.log.debug('-WAIT FOR RESPONSE OR ERROR %r' % (fut,))
 
 
@@ -1572,7 +1559,6 @@ class Producer(base.Producer):
 
     def _new_producer(self) -> aiokafka.AIOKafkaProducer:
         return self._producer_type(
-            loop=self.loop,
             **{**self._settings_default(),
                **self._settings_auth(),
                **self._settings_extra()},
@@ -1765,7 +1751,7 @@ class Transport(base.Transport):
                 topic,
                 partitions,
                 replication,
-                loop=asyncio.get_event_loop(), **kwargs)
+                **kwargs)
         try:
             await wrap()
         except Exception:
@@ -1781,7 +1767,7 @@ class Transport(base.Transport):
         for node_id in nodes:
             if node_id is None:
                 raise NotReady('Not connected to Kafka Broker')
-            request = MetadataRequest_v1([])
+            request = MetadataRequest(topics=[])
             wait_result = await owner.wait(
                 client.send(node_id, request),
                 timeout=timeout,
@@ -1829,10 +1815,12 @@ class Transport(base.Transport):
             else:
                 raise Exception('Controller node is None')
 
-        request = CreateTopicsRequest[protocol_version](
-            [(topic, partitions, replication, [], list(config.items()))],
-            timeout,
-            False,
+        request = CreateTopicsRequest(
+            create_topic_requests=[
+                (topic, partitions, replication, [], list(config.items()))
+            ],
+            timeout=timeout,
+            validate_only=False,
         )
         wait_result = await owner.wait(
             client.send(controller_node, request),

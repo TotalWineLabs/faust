@@ -115,8 +115,7 @@ class Topic(SerializedChannel, TopicT):
                  root: ChannelT = None,
                  active_partitions: Set[TP] = None,
                  allow_empty: bool = None,
-                 has_prefix: bool = False,
-                 loop: asyncio.AbstractEventLoop = None) -> None:
+                 has_prefix: bool = False) -> None:
         super().__init__(
             app,
             schema=schema,
@@ -125,7 +124,6 @@ class Topic(SerializedChannel, TopicT):
             key_serializer=key_serializer,
             value_serializer=value_serializer,
             allow_empty=allow_empty,
-            loop=loop,
             active_partitions=active_partitions,
             is_iterator=is_iterator,
             queue=queue,

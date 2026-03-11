@@ -20,11 +20,12 @@ from typing import (
     cast,
 )
 
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator, Counter, Deque
+
 from aiohttp import ClientError, ClientTimeout
 from mode import Seconds, Service, want_seconds
-from mode.utils.contexts import asynccontextmanager
 from mode.utils.times import humanize_seconds
-from mode.utils.typing import AsyncGenerator, Counter, Deque
 from yarl import URL
 
 from faust.utils import uuid
@@ -229,7 +230,7 @@ class Case(Service):
         return execution
 
     def _now(self) -> datetime:
-        return datetime.utcnow().astimezone(timezone.utc)
+        return datetime.now(timezone.utc)
 
     async def run(self, *test_args: Any, **test_kwargs: Any) -> None:
         """Override this to define your test case."""

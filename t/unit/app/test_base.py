@@ -130,7 +130,7 @@ class test_App:
         assert app.transport is by_url.return_value.return_value
         by_url.assert_called_with(app.conf.broker_consumer[0])
         by_url.return_value.assert_called_with(
-            app.conf.broker_consumer, app, loop=app.loop)
+            app.conf.broker_consumer, app)
         app.transport = 10
         assert app.transport == 10
 
@@ -149,7 +149,7 @@ class test_App:
         assert app.producer_transport is by_url.return_value.return_value
         by_url.assert_called_with(app.conf.broker_producer[0])
         by_url.return_value.assert_called_with(
-            app.conf.broker_producer, app, loop=app.loop)
+            app.conf.broker_producer, app)
         app.producer_transport = 10
         assert app.producer_transport == 10
 
@@ -1002,7 +1002,7 @@ class test_App:
         )
         monitor = app.monitor
         app.conf.Monitor.assert_called_once_with(
-            loop=app.loop, beacon=app.beacon)
+            beacon=app.beacon)
         assert monitor is app.conf.Monitor()
         assert app.monitor is monitor
         assert app._monitor is monitor
@@ -1021,7 +1021,7 @@ class test_App:
         )
         fetcher = app._fetcher
         app.transport.Fetcher.assert_called_once_with(
-            app, loop=app.loop, beacon=app.consumer.beacon,
+            app, beacon=app.consumer.beacon,
         )
         assert fetcher is app.transport.Fetcher()
 
@@ -1029,7 +1029,7 @@ class test_App:
         with patch('faust.app.base.ReplyConsumer') as ReplyConsumer:
             reply_consumer = app._reply_consumer
             ReplyConsumer.assert_called_once_with(
-                app, loop=app.loop, beacon=app.beacon)
+                app, beacon=app.beacon)
             assert reply_consumer is ReplyConsumer()
 
     def test_label(self, *, app):

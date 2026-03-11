@@ -286,7 +286,6 @@ class Agent(AgentT, Service):
             max_restarts=100.0,
             over=1.0,
             replacement=self._replace_actor,
-            loop=self.loop,
             beacon=self.beacon,
         )
 
@@ -559,7 +558,6 @@ class Agent(AgentT, Service):
                 res,
                 index=actual_stream.concurrency_index,
                 active_partitions=actual_stream.active_partitions,
-                loop=self.loop,
                 beacon=self.beacon,
             ))
         else:
@@ -569,7 +567,6 @@ class Agent(AgentT, Service):
                 res,
                 index=actual_stream.concurrency_index,
                 active_partitions=actual_stream.active_partitions,
-                loop=self.loop,
                 beacon=self.beacon,
             ))
 
@@ -592,7 +589,6 @@ class Agent(AgentT, Service):
             assert channel.active_partitions == active_partitions
         s = self.app.stream(
             channel,
-            loop=self.loop,
             active_partitions=active_partitions,
             prefix=self.name,
             beacon=self.beacon,
@@ -634,7 +630,7 @@ class Agent(AgentT, Service):
         else:
             # agent yields and is an AsyncIterator so we have to consume it.
             coro = self._slurp(aref, aiter(aref))
-        task = asyncio.Task(self._execute_actor(coro, aref), loop=self.loop)
+        task = asyncio.ensure_future(self._execute_actor(coro, aref))
         task._beacon = beacon  # type: ignore
         aref.actor_task = task
         self._actors.add(aref)
@@ -1052,7 +1048,7 @@ class AgentTestWrapper(Agent, AgentTestWrapperT):  # pragma: no cover
                  **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.results = {}
-        self.new_value_processed = asyncio.Condition(loop=self.loop)
+        self.new_value_processed = asyncio.Condition()
         self.original_channel = cast(ChannelT, original_channel)
         self.add_sink(self._on_value_processed)
         self._stream = self.channel.stream()

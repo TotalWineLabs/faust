@@ -107,19 +107,17 @@ def test_get_topic_name(*, channel):
 
 
 def test_clone(*, app):
-    c = app.channel(key_type=Point, value_type=Point, maxsize=99, loop=33)
+    c = app.channel(key_type=Point, value_type=Point, maxsize=99)
     assert isinstance(c.queue, FlowControlQueue)
     assert c.key_type is Point
     assert c.value_type is Point
     assert c.maxsize == 99
-    assert c.loop == 33
     assert not c.is_iterator
 
     c2 = c.clone()
     assert c2.key_type is Point
     assert c2.value_type is Point
     assert c2.maxsize == 99
-    assert c2.loop == 33
     assert not c2.is_iterator
     assert c2.queue is not c.queue
     assert c2._root is c

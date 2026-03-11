@@ -47,7 +47,6 @@ class ChannelT(AsyncIterator[_EventT[_T]]):
     schema: _SchemaT
     key_type: Optional[_ModelArg]
     value_type: Optional[_ModelArg]
-    loop: Optional[asyncio.AbstractEventLoop]
     maxsize: Optional[int]
     active_partitions: Optional[Set[TP]]
 
@@ -62,8 +61,7 @@ class ChannelT(AsyncIterator[_EventT[_T]]):
                  queue: ThrowableQueue = None,
                  maxsize: int = None,
                  root: 'ChannelT' = None,
-                 active_partitions: Set[TP] = None,
-                 loop: asyncio.AbstractEventLoop = None) -> None:
+                 active_partitions: Set[TP] = None) -> None:
         ...
 
     @abc.abstractmethod

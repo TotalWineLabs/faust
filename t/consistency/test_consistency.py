@@ -16,7 +16,7 @@ class Stresser(object):
         self.producers = set(range(num_producers))
         self._producer_procs = {}
         self.loop = loop
-        self._stop_stresser = asyncio.Event(loop=loop)
+        self._stop_stresser = asyncio.Event()
 
     @property
     def _stopped(self):
@@ -73,8 +73,8 @@ class Stresser(object):
                             for producer in self.producers])
         await asyncio.wait([self._start_worker(worker)
                             for worker in start_workers],
-                           loop=self.loop, return_when=asyncio.ALL_COMPLETED)
-        asyncio.ensure_future(self._run_stresser(), loop=self.loop)
+                           return_when=asyncio.ALL_COMPLETED)
+        asyncio.ensure_future(self._run_stresser())
 
     async def _start_worker(self, worker):
         assert worker in self.workers
@@ -108,14 +108,14 @@ class Stresser(object):
     async def stop_all(self):
         await asyncio.wait(
             [self._stop_worker(worker) for worker in self._running],
-            loop=self.loop, return_when=asyncio.ALL_COMPLETED,
+            return_when=asyncio.ALL_COMPLETED,
         )
 
     async def stop_all_producers(self):
         await asyncio.wait(
             [self._stop_producer(producer)
              for producer in self._running_producers],
-            loop=self.loop, return_when=asyncio.ALL_COMPLETED,
+            return_when=asyncio.ALL_COMPLETED,
         )
 
     async def _stop_worker(self, worker):
@@ -163,9 +163,9 @@ class Stresser(object):
 
 
 async def test_consistency(loop):
-    stresser = Stresser(num_workers=4, num_producers=4, loop=loop)
+    stresser = Stresser(num_workers=4, num_producers=4)
     checker = ConsistencyChecker('withdrawals',
-                                 'f-simple-user_to_total-changelog', loop=loop)
+                                 'f-simple-user_to_total-changelog')
     print('Starting stresser')
     await stresser.start(stopped_at_start=1)
     print('Waiting for stresser to run')

@@ -237,7 +237,7 @@ class test_Web:
         with patch('faust.web.drivers.aiohttp.ServerThread') as ServerThread:
             await web.on_start()
             ServerThread.assert_called_once_with(
-                web, loop=web.loop, beacon=web.beacon)
+                web, beacon=web.beacon)
             assert web._thread is ServerThread()
             web.add_dependency.assert_called_once_with(web._thread)
 

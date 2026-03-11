@@ -45,7 +45,6 @@ class BaseKafkaTableBuilder(object):
         if not self.consumer:
             self.consumer = AIOKafkaConsumer(
                 self.topic,
-                loop=self.loop,
                 bootstrap_servers=bootstrap_servers,
                 auto_offset_reset='earliest',
             )
@@ -102,8 +101,7 @@ class ConsistencyChecker(object):
     def __init__(self, source, changelog, loop):
         self.source = source
         self.loop = loop
-        self.client = AIOKafkaClient(bootstrap_servers=bootstrap_servers,
-                                     loop=self.loop)
+        self.client = AIOKafkaClient(bootstrap_servers=bootstrap_servers)
         self._source_builder = SourceTableBuilder(source, loop)
         self.changelog = changelog
         self._changelog_builder = ChangelogTableBuilder(changelog, loop)

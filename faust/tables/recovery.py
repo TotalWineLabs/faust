@@ -200,21 +200,21 @@ class Recovery(Service):
     def signal_recovery_start(self) -> Event:
         """Event used to signal that recovery has started."""
         if self._signal_recovery_start is None:
-            self._signal_recovery_start = Event(loop=self.loop)
+            self._signal_recovery_start = Event()
         return self._signal_recovery_start
 
     @property
     def signal_recovery_end(self) -> Event:
         """Event used to signal that recovery has ended."""
         if self._signal_recovery_end is None:
-            self._signal_recovery_end = Event(loop=self.loop)
+            self._signal_recovery_end = Event()
         return self._signal_recovery_end
 
     @property
     def signal_recovery_reset(self) -> Event:
         """Event used to signal that recovery is restarting."""
         if self._signal_recovery_reset is None:
-            self._signal_recovery_reset = Event(loop=self.loop)
+            self._signal_recovery_reset = Event()
         return self._signal_recovery_reset
 
     async def on_stop(self) -> None:
@@ -597,7 +597,8 @@ class Recovery(Service):
             for table in self.tables.values()
         ]
         if callback_coros:
-            await asyncio.wait(callback_coros)
+            tasks = [asyncio.ensure_future(c) for c in callback_coros]
+            await asyncio.wait(tasks)
         assignment = consumer.assignment()
         if assignment:
             self.log.info('Seek stream partitions to committed offsets.')

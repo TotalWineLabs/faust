@@ -248,7 +248,7 @@ def _recorded_tasks_at_startup(request, loop):
     try:
         request.node._tasks_at_startup
     except AttributeError:
-        request.node._tasks_at_startup = set(all_tasks(loop=loop))
+        request.node._tasks_at_startup = set(all_tasks())
 
 
 @pytest.fixture(autouse=True)
@@ -263,7 +263,7 @@ def tasks_not_lingering(request, loop, event_loop, _recorded_tasks_at_startup):
         yield
     finally:
         tasks_then = request.node._tasks_at_startup
-        tasks_now = set(all_tasks(loop=loop))
+        tasks_now = set(all_tasks())
         if tasks_then != tasks_now:
             request.node._tasks_at_startup = tasks_now
             pending = {task for task in tasks_now if task and not task.done()}

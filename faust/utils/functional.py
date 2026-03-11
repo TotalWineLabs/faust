@@ -10,7 +10,7 @@ from typing import (
     Tuple,
     TypeVar,
 )
-from mode.utils.typing import Deque
+from typing import Deque
 
 __all__ = [
     'consecutive_numbers',
