@@ -13,3 +13,4 @@ twine
 vulture
 wheel>=0.29.0
 intervaltree
+mmh3>=5.1.0,<6.0.0

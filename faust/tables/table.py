@@ -1,4 +1,5 @@
 """Table (key/value changelog stream)."""
+import logging
 from typing import Any, ClassVar, Type
 
 from mode import Seconds
@@ -13,6 +14,8 @@ from . import wrappers
 from .base import Collection
 
 __all__ = ['Table']
+
+logger = logging.getLogger(__name__)
 
 
 class Table(TableT[KT, VT], Collection):
@@ -83,6 +86,12 @@ class Table(TableT[KT, VT], Collection):
         assert partition is not None
         self._maybe_set_key_ttl(key, partition)
         self._sensor_on_set(self, key, value)
+        for cb in self._on_key_set_callbacks:
+            try:
+                cb(key, value)
+            except Exception as exc:
+                logger.exception(
+                    'on_key_set callback %r raised: %r', cb, exc)
 
     def on_key_del(self, 
                    key: KT, 
@@ -98,6 +107,12 @@ class Table(TableT[KT, VT], Collection):
         assert partition is not None
         self._maybe_del_key_ttl(key, partition)
         self._sensor_on_del(self, key)
+        for cb in self._on_key_del_callbacks:
+            try:
+                cb(key)
+            except Exception as exc:
+                logger.exception(
+                    'on_key_del callback %r raised: %r', cb, exc)
 
     def as_ansitable(self, title: str = '{table.name}',
                      **kwargs: Any) -> str:

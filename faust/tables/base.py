@@ -163,10 +163,36 @@ class Collection(Service, CollectionT):
         if on_recover:
             self.on_recover(on_recover)
 
+        # Write-event callbacks for external consumers (e.g. joins)
+        self._on_key_set_callbacks: List[Callable] = []
+        self._on_key_del_callbacks: List[Callable] = []
+
         # Aliases
         self._sensor_on_get = self.app.sensors.on_table_get
         self._sensor_on_set = self.app.sensors.on_table_set
         self._sensor_on_del = self.app.sensors.on_table_del
+
+    def register_on_key_set(self, callback: Callable) -> None:
+        """Register a callback to be called on key set."""
+        self._on_key_set_callbacks.append(callback)
+
+    def unregister_on_key_set(self, callback: Callable) -> None:
+        """Unregister a key-set callback (no-op if not registered)."""
+        try:
+            self._on_key_set_callbacks.remove(callback)
+        except ValueError:
+            pass
+
+    def register_on_key_del(self, callback: Callable) -> None:
+        """Register a callback to be called on key delete."""
+        self._on_key_del_callbacks.append(callback)
+
+    def unregister_on_key_del(self, callback: Callable) -> None:
+        """Unregister a key-del callback (no-op if not registered)."""
+        try:
+            self._on_key_del_callbacks.remove(callback)
+        except ValueError:
+            pass
 
     def _serializer_from_type(
             self, typ: Optional[ModelArg]) -> Optional[CodecArg]:
@@ -454,6 +480,30 @@ class Collection(Service, CollectionT):
         # Should stop any services started to support joining this table
         # with one or more streams.
         ...
+
+    def foreign_key_join(
+        self,
+        right_table: CollectionT,
+        extractor: Callable[[Any], Any],
+        *,
+        inner: bool = True,
+    ) -> Any:
+        """Join this table with another table via a foreign key.
+
+        Returns a channel that emits ``JoinedValue(left, right)`` tuples
+        whenever either side changes.
+        """
+        from .fkjoin import ForeignKeyJoinProcessor
+        processor = ForeignKeyJoinProcessor(
+            self.app,
+            left_table=self,
+            right_table=right_table,
+            extractor=extractor,
+            inner=inner,
+        )
+        self.beacon.add(processor)
+        self.add_dependency(processor)
+        return processor._output_channel
 
     def _new_changelog_topic(self,
                              *,

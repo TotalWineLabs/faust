@@ -1,6 +1,9 @@
 """Join strategies."""
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
+
+from .models import Record
 from .types import EventT, FieldDescriptorT, JoinT, JoinableT
+from .types.joins import ForeignKeyJoinT, SubscriptionInstruction
 
 __all__ = [
     'Join',
@@ -8,7 +11,23 @@ __all__ = [
     'LeftJoin',
     'InnerJoin',
     'OuterJoin',
+    'ForeignKeyJoin',
+    'SubscriptionMessage',
+    'ResponseMessage',
 ]
+
+
+class SubscriptionMessage(Record, serializer='json'):
+    """Message sent from left-side to right-side via subscription topic."""
+    left_pk: Any
+    hash: bytes = b''
+    instruction: str = SubscriptionInstruction.SUBSCRIBE_AND_RESPOND.value
+
+
+class ResponseMessage(Record, serializer='json'):
+    """Message sent from right-side back to left-side via response topic."""
+    right_value: Any = None
+    hash: bytes = b''
 
 
 class Join(JoinT):
@@ -47,3 +66,20 @@ class InnerJoin(Join):
 
 class OuterJoin(Join):
     """Outer-join strategy."""
+
+
+class ForeignKeyJoin(ForeignKeyJoinT):
+    """Foreign key join strategy linking two tables via subscription/response."""
+
+    def __init__(
+        self,
+        left_table: Any,
+        right_table: Any,
+        extractor: Callable[[Any], Any],
+        *,
+        inner: bool = True,
+    ) -> None:
+        self.left_table = left_table
+        self.right_table = right_table
+        self.extractor = extractor
+        self.inner = inner

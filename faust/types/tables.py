@@ -236,7 +236,17 @@ class CollectionT(ServiceT, JoinableT):
 
     @abc.abstractmethod
     def prefix_scan(self, prefix: Any) -> Iterator[Tuple[Any, Any]]:
-        ...        
+        ...
+
+    @abc.abstractmethod
+    def foreign_key_join(
+        self,
+        right_table: 'CollectionT',
+        extractor: Callable[[Any], Any],
+        *,
+        inner: bool = True,
+    ) -> Any:
+        ...
 
 
 class TableT(CollectionT, ManagedUserDict[KT, VT]):

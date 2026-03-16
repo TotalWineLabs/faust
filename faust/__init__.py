@@ -24,7 +24,7 @@ import typing
 
 from typing import Any, Mapping, NamedTuple, Optional, Sequence, Tuple
 
-__version__ = '1.17.8'
+__version__ = '1.17.9'
 __author__ = 'Robinhood Markets, Inc.'
 __contact__ = 'contact@fauststream.com'
 __homepage__ = 'http://faust.readthedocs.io/'
@@ -127,9 +127,11 @@ if typing.TYPE_CHECKING:  # pragma: no cover
     from .sensors import Monitor, Sensor                        # noqa: E402
     from .serializers import Codec, Schema                      # noqa: E402
     from .streams import Stream, StreamT, current_event         # noqa: E402
+    from .joins import ForeignKeyJoin                           # noqa: E402
     from .tables.globaltable import GlobalTable                 # noqa: E402
     from .tables.table import Table                             # noqa: E402
     from .tables.sets import SetGlobalTable, SetTable           # noqa: E402
+    from .types.joins import JoinedValue                        # noqa: E402
     from .topics import Topic, TopicT                           # noqa: E402
     from .types.settings import Settings                        # noqa: E402
     from .windows import (                                      # noqa: E402
@@ -150,6 +152,8 @@ __all__ = [
     'ChannelT',
     'Event',
     'EventT',
+    'ForeignKeyJoin',
+    'JoinedValue',
     'Model',
     'ModelOptions',
     'Record',
@@ -188,6 +192,8 @@ from types import ModuleType  # noqa
 all_by_module: Mapping[str, Sequence[str]] = {
     'faust.agents': ['Agent'],
     'faust.app': ['App'],
+    'faust.joins': ['ForeignKeyJoin'],
+    'faust.types.joins': ['JoinedValue'],
     'faust.channels': ['Channel', 'ChannelT'],
     'faust.events': ['Event', 'EventT'],
     'faust.models': ['ModelOptions', 'Record'],
