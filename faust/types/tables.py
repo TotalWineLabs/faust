@@ -239,13 +239,14 @@ class CollectionT(ServiceT, JoinableT):
         ...
 
     @abc.abstractmethod
-    def foreign_key_join(
+    def key_join(
         self,
         right_table: 'CollectionT',
         extractor: Callable[[Any], Any],
         *,
         inner: bool = True,
     ) -> Any:
+        """Join this table with another table based on a key extractor."""
         ...
 
 

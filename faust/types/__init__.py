@@ -9,7 +9,7 @@ from .core import HeadersArg, K, V
 from .enums import ProcessingGuarantee
 from .events import EventT
 from .fixups import FixupT
-from .joins import JoinT, JoinedValue, ForeignKeyJoinT, SubscriptionInstruction
+from .joins import JoinT, JoinedValue, KeyJoinT, SubscriptionInstruction
 from .models import FieldDescriptorT, ModelArg, ModelOptions, ModelT
 from .sensors import SensorT
 from .serializers import RegistryT, SchemaT
@@ -65,7 +65,7 @@ __all__ = [
     # types.joins
     'JoinT',
     'JoinedValue',
-    'ForeignKeyJoinT',
+    'KeyJoinT',
     'SubscriptionInstruction',
 
     # types.models

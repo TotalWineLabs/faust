@@ -9,7 +9,7 @@ from .streams import JoinableT
 __all__ = [
     'JoinT',
     'JoinedValue',
-    'ForeignKeyJoinT',
+    'KeyJoinT',
     'SubscriptionInstruction',
 ]
 
@@ -29,21 +29,23 @@ class JoinT(abc.ABC):
 
 
 class JoinedValue(NamedTuple):
-    """Result of a foreign key join containing both sides."""
+    """Result of a key join containing both sides."""
     left: Any
     right: Any
 
 
 class SubscriptionInstruction(enum.Enum):
-    """Instruction field for FK join subscription messages."""
+    """Instruction field for key join subscription messages."""
     SUBSCRIBE_AND_RESPOND = 'SUBSCRIBE_AND_RESPOND'
     SUBSCRIBE_ONLY = 'SUBSCRIBE_ONLY'
     UNSUBSCRIBE_ONLY = 'UNSUBSCRIBE_ONLY'
 
 
-class ForeignKeyJoinT(abc.ABC):
-    """Abstract type for foreign key join strategies."""
+class KeyJoinT(abc.ABC):
+    """Abstract type for key join strategies."""
     left_table: Any  # CollectionT (avoiding circular import)
     right_table: Any  # CollectionT
     extractor: Callable[[Any], Any]
     inner: bool
+
+

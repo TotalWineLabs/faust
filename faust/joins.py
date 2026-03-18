@@ -3,7 +3,7 @@ from typing import Any, Callable, Optional, Tuple
 
 from .models import Record
 from .types import EventT, FieldDescriptorT, JoinT, JoinableT
-from .types.joins import ForeignKeyJoinT, SubscriptionInstruction
+from .types.joins import KeyJoinT, SubscriptionInstruction
 
 __all__ = [
     'Join',
@@ -11,7 +11,8 @@ __all__ = [
     'LeftJoin',
     'InnerJoin',
     'OuterJoin',
-    'ForeignKeyJoin',
+    'KeyJoin',
+    'ForeignKeyJoin',  # deprecated alias
     'SubscriptionMessage',
     'ResponseMessage',
 ]
@@ -68,8 +69,8 @@ class OuterJoin(Join):
     """Outer-join strategy."""
 
 
-class ForeignKeyJoin(ForeignKeyJoinT):
-    """Foreign key join strategy linking two tables via subscription/response."""
+class KeyJoin(KeyJoinT):
+    """Key join strategy linking two tables via subscription/response."""
 
     def __init__(
         self,
@@ -83,3 +84,15 @@ class ForeignKeyJoin(ForeignKeyJoinT):
         self.right_table = right_table
         self.extractor = extractor
         self.inner = inner
+
+
+def ForeignKeyJoin(*args: Any, **kwargs: Any) -> 'KeyJoin':
+    """Deprecated: use KeyJoin instead."""
+    import warnings
+    warnings.warn(
+        "ForeignKeyJoin is deprecated and will be removed in the next major "
+        "version. Use KeyJoin instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return KeyJoin(*args, **kwargs)

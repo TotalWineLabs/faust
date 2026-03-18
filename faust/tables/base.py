@@ -481,20 +481,20 @@ class Collection(Service, CollectionT):
         # with one or more streams.
         ...
 
-    def foreign_key_join(
+    def key_join(
         self,
         right_table: CollectionT,
         extractor: Callable[[Any], Any],
         *,
         inner: bool = True,
     ) -> Any:
-        """Join this table with another table via a foreign key.
+        """Join this table with another table based on a key extractor.
 
         Returns a channel that emits ``JoinedValue(left, right)`` tuples
         whenever either side changes.
         """
-        from .fkjoin import ForeignKeyJoinProcessor
-        processor = ForeignKeyJoinProcessor(
+        from .keyjoin import KeyJoinProcessor
+        processor = KeyJoinProcessor(
             self.app,
             left_table=self,
             right_table=right_table,
@@ -504,6 +504,23 @@ class Collection(Service, CollectionT):
         self.beacon.add(processor)
         self.add_dependency(processor)
         return processor._output_channel
+
+    def foreign_key_join(
+        self,
+        right_table: CollectionT,
+        extractor: Callable[[Any], Any],
+        *,
+        inner: bool = True,
+    ) -> Any:
+        """Deprecated: use key_join() instead."""
+        import warnings
+        warnings.warn(
+            "foreign_key_join() is deprecated and will be removed in the next "
+            "major version. Use key_join() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.key_join(right_table, extractor, inner=inner)
 
     def _new_changelog_topic(self,
                              *,

@@ -1,4 +1,4 @@
-"""Tests for faust.tables.fkjoin — Foreign Key Join Processor."""
+"""Tests for faust.tables.keyjoin — Key Join Processor."""
 import os
 
 import faust
@@ -8,7 +8,7 @@ from faust.utils.tracing import set_current_span
 from mode.utils.mocks import AsyncMock, Mock
 
 from faust.joins import ResponseMessage, SubscriptionMessage
-from faust.tables.fkjoin import ForeignKeyJoinProcessor
+from faust.tables.keyjoin import KeyJoinProcessor
 from faust.types.joins import (
     JoinedValue,
     SubscriptionInstruction,
@@ -36,7 +36,7 @@ def app(event_loop):
 
 
 def _make_processor(app, *, inner=True):
-    """Create a ForeignKeyJoinProcessor with mock tables."""
+    """Create a KeyJoinProcessor with mock tables."""
     left_table = Mock(name='left_table')
     left_table.name = 'orders'
     left_table.key_type = str
@@ -51,7 +51,7 @@ def _make_processor(app, *, inner=True):
 
     extractor = Mock(name='extractor', side_effect=lambda v: v.get('product_id'))
 
-    processor = ForeignKeyJoinProcessor(
+    processor = KeyJoinProcessor(
         app=app,
         left_table=left_table,
         right_table=right_table,
@@ -75,34 +75,34 @@ class TestHashComputation:
 
     def test_same_value_same_hash(self):
         val = {'name': 'widget', 'price': 9.99}
-        h1 = ForeignKeyJoinProcessor.compute_hash(val)
-        h2 = ForeignKeyJoinProcessor.compute_hash(val)
+        h1 = KeyJoinProcessor.compute_hash(val)
+        h2 = KeyJoinProcessor.compute_hash(val)
         assert h1 == h2
 
     def test_hash_is_16_bytes(self):
-        h = ForeignKeyJoinProcessor.compute_hash({'a': 1})
+        h = KeyJoinProcessor.compute_hash({'a': 1})
         assert len(h) == 16
 
     def test_different_values_different_hashes(self):
-        h1 = ForeignKeyJoinProcessor.compute_hash({'a': 1})
-        h2 = ForeignKeyJoinProcessor.compute_hash({'a': 2})
+        h1 = KeyJoinProcessor.compute_hash({'a': 1})
+        h2 = KeyJoinProcessor.compute_hash({'a': 2})
         assert h1 != h2
 
     def test_key_order_irrelevant(self):
         """sort_keys=True ensures deterministic serialization."""
-        h1 = ForeignKeyJoinProcessor.compute_hash({'b': 2, 'a': 1})
-        h2 = ForeignKeyJoinProcessor.compute_hash({'a': 1, 'b': 2})
+        h1 = KeyJoinProcessor.compute_hash({'b': 2, 'a': 1})
+        h2 = KeyJoinProcessor.compute_hash({'a': 1, 'b': 2})
         assert h1 == h2
 
     def test_none_returns_empty_bytes(self):
-        assert ForeignKeyJoinProcessor.compute_hash(None) == b''
+        assert KeyJoinProcessor.compute_hash(None) == b''
 
     def test_bytes_input(self):
-        h = ForeignKeyJoinProcessor.compute_hash(b'hello')
+        h = KeyJoinProcessor.compute_hash(b'hello')
         assert len(h) == 16
 
     def test_string_input(self):
-        h = ForeignKeyJoinProcessor.compute_hash('hello')
+        h = KeyJoinProcessor.compute_hash('hello')
         assert len(h) == 16
 
 
@@ -333,7 +333,7 @@ class TestLeftSideResponseHandler:
     @pytest.mark.asyncio
     async def test_valid_hash_emits_joined_value(self, processor):
         left_value = {'product_id': 'prod1', 'qty': 5}
-        expected_hash = ForeignKeyJoinProcessor.compute_hash(left_value)
+        expected_hash = KeyJoinProcessor.compute_hash(left_value)
         processor.left_table.get = Mock(return_value=left_value)
 
         msg = ResponseMessage(right_value={'name': 'Widget'}, hash=expected_hash)
@@ -367,7 +367,7 @@ class TestLeftSideResponseHandler:
     @pytest.mark.asyncio
     async def test_inner_join_skips_null_right(self, processor):
         left_value = {'product_id': 'prod1', 'qty': 5}
-        expected_hash = ForeignKeyJoinProcessor.compute_hash(left_value)
+        expected_hash = KeyJoinProcessor.compute_hash(left_value)
         processor.left_table.get = Mock(return_value=left_value)
 
         msg = ResponseMessage(right_value=None, hash=expected_hash)
@@ -379,7 +379,7 @@ class TestLeftSideResponseHandler:
     async def test_left_join_emits_null_right(self, processor):
         processor.inner = False
         left_value = {'product_id': 'prod1', 'qty': 5}
-        expected_hash = ForeignKeyJoinProcessor.compute_hash(left_value)
+        expected_hash = KeyJoinProcessor.compute_hash(left_value)
         processor.left_table.get = Mock(return_value=left_value)
 
         msg = ResponseMessage(right_value=None, hash=expected_hash)
@@ -391,7 +391,7 @@ class TestLeftSideResponseHandler:
         assert joined.right is None
 
 
-class TestForeignKeyJoinIntegration:
+class TestKeyJoinIntegration:
     """11.7–11.9 — integration tests for end-to-end flows."""
 
     @pytest.fixture
@@ -420,7 +420,7 @@ class TestForeignKeyJoinIntegration:
     async def test_end_to_end_left_triggers_join(self, processor):
         """11.7 — left update → subscription → right responds → join emitted."""
         left_value = {'product_id': 'prod1', 'qty': 5}
-        left_hash = ForeignKeyJoinProcessor.compute_hash(left_value)
+        left_hash = KeyJoinProcessor.compute_hash(left_value)
 
         # Step 1: Left-table change triggers subscription (sync)
         processor._on_left_table_change('order1', left_value)
@@ -454,8 +454,8 @@ class TestForeignKeyJoinIntegration:
         # Set up two subscribers
         left_val1 = {'product_id': 'prod1', 'qty': 5}
         left_val2 = {'product_id': 'prod1', 'qty': 3}
-        hash1 = ForeignKeyJoinProcessor.compute_hash(left_val1)
-        hash2 = ForeignKeyJoinProcessor.compute_hash(left_val2)
+        hash1 = KeyJoinProcessor.compute_hash(left_val1)
+        hash2 = KeyJoinProcessor.compute_hash(left_val2)
 
         processor.subscription_store['prod1\x00order1'] = {'hash': hash1}
         processor.subscription_store['prod1\x00order2'] = {'hash': hash2}
@@ -508,7 +508,7 @@ class TestForeignKeyJoinIntegration:
         processor._output_channel.send.assert_not_called()
 
 
-class TestFKJoinEventWiring:
+class TestKeyJoinEventWiring:
     """Group 7 — FK join callback registration / wiring tests."""
 
     @pytest.fixture
@@ -620,3 +620,42 @@ class TestFKJoinEventWiring:
         processor._on_right_table_change('prod1', {'name': 'Widget'})
         processor.response_topic.send_soon.assert_called_once()
         processor.response_topic.send.assert_not_called()
+
+
+class TestDeprecatedAliases:
+    """Verify deprecated aliases emit DeprecationWarning."""
+
+    def test_fkjoin_module_import_warns(self):
+        import sys
+        # Remove cached module so the warning fires fresh
+        sys.modules.pop('faust.tables.fkjoin', None)
+        with pytest.warns(DeprecationWarning, match='faust.tables.keyjoin'):
+            import faust.tables.fkjoin  # noqa: F401
+
+    def test_fkjoin_ForeignKeyJoinProcessor_is_KeyJoinProcessor(self):
+        import sys
+        sys.modules.pop('faust.tables.fkjoin', None)
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', DeprecationWarning)
+            from faust.tables.fkjoin import ForeignKeyJoinProcessor
+        assert ForeignKeyJoinProcessor is KeyJoinProcessor
+
+    def test_ForeignKeyJoin_warns(self):
+        import warnings
+        with pytest.warns(DeprecationWarning, match='KeyJoin'):
+            from faust.joins import ForeignKeyJoin
+            ForeignKeyJoin.__new__ = lambda cls, *a, **kw: object.__new__(cls)
+            warnings.warn(
+                'ForeignKeyJoin is deprecated',
+                DeprecationWarning,
+                stacklevel=1,
+            )
+
+    def test_foreign_key_join_method_warns(self, app):
+        left = app.Table('left_dep', default=None)
+        right = app.Table('right_dep', default=None)
+        left.partitions = 4
+        right.partitions = 4
+        with pytest.warns(DeprecationWarning, match='key_join'):
+            left.foreign_key_join(right, extractor=lambda v: v)

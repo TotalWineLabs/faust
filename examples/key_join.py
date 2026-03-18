@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""Foreign Key Join example.
+"""Key Join example.
 
-Demonstrates joining two tables via a foreign key using Faust's
+Demonstrates joining two tables via a key extractor using Faust's
 subscription/response protocol (inspired by Kafka Streams KIP-213).
 
 Scenario
@@ -9,7 +9,7 @@ Scenario
 
 We have **orders** referencing a **product_id**, and a separate
 **products** table.  Whenever an order arrives or a product is updated,
-the foreign key join emits a ``JoinedValue(left=order, right=product)``
+the key join emits a ``JoinedValue(left=order, right=product)``
 so downstream consumers always see the latest combined data.
 
 Quick Start
@@ -21,20 +21,20 @@ Quick Start
 
 .. sourcecode:: console
 
-    $ python examples/foreign_key_join.py worker -l info
+    $ python examples/key_join.py worker -l info
 
 3) In another terminal, produce sample data:
 
 .. sourcecode:: console
 
-    $ python examples/foreign_key_join.py produce
+    $ python examples/key_join.py produce
 """
 import asyncio
 from itertools import count
 import faust
 
 app = faust.App(
-    'faust-fk-join-example',
+    'faust-key-join-example',
     broker='kafka://localhost:9092',
     store='rocksdb://',
     version=1,
@@ -77,12 +77,12 @@ orders_table = app.Table(
 )
 
 
-# --- Foreign Key Join ---
+# --- Key Join ---
 
-# Join orders to products using the product_id foreign key.
+# Join orders to products using the product_id as the join key.
 # Returns a channel emitting JoinedValue(left=Order, right=Product)
 # whenever either side changes.
-joined_channel = orders_table.foreign_key_join(
+joined_channel = orders_table.key_join(
     products_table,
     extractor=lambda order: order.product_id,
     inner=True,

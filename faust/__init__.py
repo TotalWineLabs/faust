@@ -127,7 +127,7 @@ if typing.TYPE_CHECKING:  # pragma: no cover
     from .sensors import Monitor, Sensor                        # noqa: E402
     from .serializers import Codec, Schema                      # noqa: E402
     from .streams import Stream, StreamT, current_event         # noqa: E402
-    from .joins import ForeignKeyJoin                           # noqa: E402
+    from .joins import KeyJoin, ForeignKeyJoin                  # noqa: E402
     from .tables.globaltable import GlobalTable                 # noqa: E402
     from .tables.table import Table                             # noqa: E402
     from .tables.sets import SetGlobalTable, SetTable           # noqa: E402
@@ -152,7 +152,8 @@ __all__ = [
     'ChannelT',
     'Event',
     'EventT',
-    'ForeignKeyJoin',
+    'KeyJoin',
+    'ForeignKeyJoin',  # deprecated alias
     'JoinedValue',
     'Model',
     'ModelOptions',
@@ -192,7 +193,7 @@ from types import ModuleType  # noqa
 all_by_module: Mapping[str, Sequence[str]] = {
     'faust.agents': ['Agent'],
     'faust.app': ['App'],
-    'faust.joins': ['ForeignKeyJoin'],
+    'faust.joins': ['KeyJoin', 'ForeignKeyJoin'],
     'faust.types.joins': ['JoinedValue'],
     'faust.channels': ['Channel', 'ChannelT'],
     'faust.events': ['Event', 'EventT'],
