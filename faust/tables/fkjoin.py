@@ -1,5 +1,6 @@
 """Foreign Key Join — subscription/response protocol (KIP-213)."""
 import mmh3
+import asyncio
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from mode import Service
@@ -51,9 +52,18 @@ class ForeignKeyJoinProcessor(Service, ForeignKeyJoinT):
         _ = self.response_topic
         _ = self.subscription_store
         _ = self.previous_fk_store
+        
         self._output_channel = self.app.channel()
 
     # --- Group 2: Internal Topic Creation ---
+
+    async def maybe_create_topics(self) -> None:
+        """Create internal topics if they don't exist."""
+        topics = [
+            self.subscription_topic.maybe_declare(),
+            self.response_topic.maybe_declare()
+        ]
+        await asyncio.gather(*topics)
 
     def _subscription_topic_name(self) -> str:
         return (
@@ -331,6 +341,11 @@ class ForeignKeyJoinProcessor(Service, ForeignKeyJoinT):
         # Start background tasks
         self.add_future(self._run_subscription_agent())
         self.add_future(self._run_response_agent())
+
+    async def on_first_start(self) -> None:
+        """Call first time service starts in this process."""
+        await super().on_first_start()
+        await self.maybe_create_topics()
 
     async def on_stop(self) -> None:
         """Unregister callbacks on shutdown."""
