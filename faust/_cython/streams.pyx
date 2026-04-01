@@ -123,7 +123,7 @@ cdef class StreamIterator:
                                     self.unacked.discard(message)
                                     acked_index.add(offset)
                                     acked_for_tp = consumer._acked[tp]
-                                    acked_for_tp.append(offset)
+                                    acked_for_tp.add(offset)
                                     consumer._n_acked += 1
                                     last_stream_to_ack = True
                         finally:

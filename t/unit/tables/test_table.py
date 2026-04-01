@@ -152,3 +152,75 @@ class test_Table:
             ce.return_value = None
             with pytest.raises(TypeError):
                 table.on_key_del('k')
+
+    def test_register_on_key_set_fires_on_set(self, *, table):
+        cb = Mock(name='on_key_set_cb')
+        table.register_on_key_set(cb)
+        with patch('faust.tables.base.current_event') as ce:
+            ce.return_value = event()
+            table.send_changelog = Mock(name='send_changelog')
+            table.on_key_set('k', 'v')
+        cb.assert_called_once_with('k', 'v')
+
+    def test_unregister_on_key_set_stops_firing(self, *, table):
+        cb = Mock(name='on_key_set_cb')
+        table.register_on_key_set(cb)
+        table.unregister_on_key_set(cb)
+        with patch('faust.tables.base.current_event') as ce:
+            ce.return_value = event()
+            table.send_changelog = Mock(name='send_changelog')
+            table.on_key_set('k', 'v')
+        cb.assert_not_called()
+
+    def test_unregister_on_key_set_missing_is_noop(self, *, table):
+        cb = Mock(name='on_key_set_cb')
+        # Should not raise
+        table.unregister_on_key_set(cb)
+
+    def test_register_on_key_del_fires_on_del(self, *, table):
+        cb = Mock(name='on_key_del_cb')
+        table.register_on_key_del(cb)
+        with patch('faust.tables.base.current_event') as ce:
+            ce.return_value = event()
+            table.send_changelog = Mock(name='send_changelog')
+            table.data['k'] = 'v'
+            table.on_key_del('k')
+        cb.assert_called_once_with('k')
+
+    def test_unregister_on_key_del_stops_firing(self, *, table):
+        cb = Mock(name='on_key_del_cb')
+        table.register_on_key_del(cb)
+        table.unregister_on_key_del(cb)
+        with patch('faust.tables.base.current_event') as ce:
+            ce.return_value = event()
+            table.send_changelog = Mock(name='send_changelog')
+            table.data['k'] = 'v'
+            table.on_key_del('k')
+        cb.assert_not_called()
+
+    def test_on_key_set_callback_exception_logged(self, *, table):
+        cb = Mock(name='bad_cb', side_effect=RuntimeError('boom'))
+        table.register_on_key_set(cb)
+        with patch('faust.tables.base.current_event') as ce:
+            ce.return_value = event()
+            table.send_changelog = Mock(name='send_changelog')
+            # Should not raise despite callback exception
+            table.on_key_set('k', 'v')
+        cb.assert_called_once_with('k', 'v')
+
+    def test_on_key_set_subsequent_callbacks_fire_after_exception(
+            self, *, table):
+        bad_cb = Mock(name='bad_cb', side_effect=RuntimeError('boom'))
+        good_cb = Mock(name='good_cb')
+        table.register_on_key_set(bad_cb)
+        table.register_on_key_set(good_cb)
+        with patch('faust.tables.base.current_event') as ce:
+            ce.return_value = event()
+            table.send_changelog = Mock(name='send_changelog')
+            table.on_key_set('k', 'v')
+        bad_cb.assert_called_once_with('k', 'v')
+        good_cb.assert_called_once_with('k', 'v')
+
+    def test_callbacks_initialized_empty(self, *, table):
+        assert table._on_key_set_callbacks == []
+        assert table._on_key_del_callbacks == []
