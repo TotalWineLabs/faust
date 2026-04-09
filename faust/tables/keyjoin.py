@@ -1,7 +1,7 @@
 """Key Join — subscription/response protocol (KIP-213)."""
 import mmh3
 import asyncio
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from mode import Service
 
@@ -173,19 +173,17 @@ class KeyJoinProcessor(Service, KeyJoinT):
             self._previous_fk = self._create_previous_fk_store()
         return self._previous_fk
 
-    def prefix_scan(self, fk: Any) -> List[Tuple[Any, Dict[str, Any]]]:
-        """Return all subscription entries for a given FK.
+    def prefix_scan(self, fk: Any) -> Iterator[Tuple[Any, Dict[str, Any]]]:
+        """Yield all subscription entries for a given FK.
 
         Uses the subscription store's ``prefix_scan`` to find all
         composite keys ``"{fk}\\x00{left_pk}"`` matching the FK prefix
-        and returns ``[(left_pk, entry), ...]``.
+        and yields ``(left_pk, entry)`` pairs.
         """
         prefix = f"{fk}\x00"
-        results = []
         for key, value in self.subscription_store.prefix_scan(prefix):
             left_pk = key[len(prefix):]
-            results.append((left_pk, value))
-        return results
+            yield (left_pk, value)
 
     # --- Group 4: Hash Computation ---
 
@@ -202,6 +200,24 @@ class KeyJoinProcessor(Service, KeyJoinT):
         else:
             data = codecs.dumps('json', value)
         return mmh3.hash128(data)
+
+    # --- Helpers: Key Serialization ---
+
+    def _serialize_fk(self, fk: Any) -> bytes:
+        """Serialize a foreign key using the right table's key serializer."""
+        return self.app.serializers.dumps_key(
+            self.right_table.key_type,
+            fk,
+            serializer=self.right_table.key_serializer,
+        )
+
+    def _serialize_left_pk(self, left_pk: Any) -> bytes:
+        """Serialize a left primary key using the left table's key serializer."""
+        return self.app.serializers.dumps_key(
+            self.left_table.key_type,
+            left_pk,
+            serializer=self.left_table.key_serializer,
+        )
 
     # --- Group 5: Left-Side Subscription Sender ---
 
@@ -246,7 +262,7 @@ class KeyJoinProcessor(Service, KeyJoinT):
         instruction: SubscriptionInstruction,
     ) -> None:
         msg = { "left_pk": left_pk, "hash": hash_value, "instruction": instruction.value }
-        partition = self.app.producer.key_partition(current_event().message.topic, fk.encode()).partition
+        partition = self.app.producer.key_partition(current_event().message.topic, self._serialize_fk(fk)).partition
         self.subscription_topic.send_soon(key=fk, value=msg, partition=partition)
 
     # --- Group 6: Right-Side Subscription Processor ---
@@ -269,7 +285,7 @@ class KeyJoinProcessor(Service, KeyJoinT):
             right_value = self.right_table.get(fk)
             left_pk = message.get('left_pk')
             response = { "right_value": right_value, "hash": message.get('hash', 0) }
-            partition = self.app.producer.key_partition(current_event().message.topic, left_pk.encode()).partition
+            partition = self.app.producer.key_partition(current_event().message.topic, self._serialize_left_pk(left_pk)).partition
             await self.response_topic.send(key=left_pk, value=response, partition=partition)
 
     # --- Group 7: Right-Table Update Propagation ---
@@ -279,11 +295,9 @@ class KeyJoinProcessor(Service, KeyJoinT):
     ) -> None:
         """Called when the right table is updated."""
         right_value = None if is_delete else value
-        subscribers = self.prefix_scan(key)
-
-        for left_pk, entry in subscribers:
+        for left_pk, entry in self.prefix_scan(key):
             response = { "right_value": right_value, "hash": entry.get('hash', 0) }
-            partition = self.app.producer.key_partition(current_event().message.topic, left_pk.encode()).partition
+            partition = self.app.producer.key_partition(current_event().message.topic, self._serialize_left_pk(left_pk)).partition
             self.response_topic.send_soon(key=left_pk, value=response, partition=partition)
 
     # --- Group 8: Left-Side Response Handler ---

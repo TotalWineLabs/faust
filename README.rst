@@ -10,7 +10,7 @@ Note: This project is a fork of the original **Faust** stream processing library
 
 |build-status| |coverage| |license| |wheel| |pyversion| |pyimp|
 
-:Version: 1.17.10
+:Version: 1.17.11
 :Web: http://faust.readthedocs.io/
 :Download: http://pypi.org/project/faust
 :Source: http://github.com/robinhood/faust

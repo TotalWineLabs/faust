@@ -249,6 +249,25 @@ class CollectionT(ServiceT, JoinableT):
         """Join this table with another table based on a key extractor."""
         ...
 
+    @abc.abstractmethod
+    def register_on_key_set(self, callback: Callable) -> None:
+        """Register a callback to be called on key set."""
+        ...
+
+    @abc.abstractmethod
+    def unregister_on_key_set(self, callback: Callable) -> None:
+        """Unregister a key-set callback (no-op if not registered)."""
+        ...
+
+    @abc.abstractmethod
+    def register_on_key_del(self, callback: Callable) -> None:
+        """Register a callback to be called on key delete."""
+        ...
+
+    @abc.abstractmethod
+    def unregister_on_key_del(self, callback: Callable) -> None:
+        """Unregister a key-del callback (no-op if not registered)."""
+        ...
 
 class TableT(CollectionT, ManagedUserDict[KT, VT]):
     ...
