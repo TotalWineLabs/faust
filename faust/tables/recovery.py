@@ -847,7 +847,7 @@ class Recovery(Service):
         return Counter({
             tp: highwater - offsets[tp]
             for tp, highwater in highwaters.items()
-            if highwater >= 0 and offsets[tp] >= 0
+            if highwater is not None and offsets[tp] is not None
         })
 
     def active_remaining_total(self) -> int:
