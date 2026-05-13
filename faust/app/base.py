@@ -1580,7 +1580,19 @@ class App(AppT, Service):
                         await T(consumer.transactions.on_partitions_revoked)(
                             revoked)
                 else:
-                    self.log.dev('ON P. REVOKED NOT COMMITTING: NO ASSIGNMENT')
+                    # With eager rebalance, assignment is empty because all
+                    # partitions are revoked at once. We must still stop the
+                    # flow and flush transactions to prevent zombie partitions
+                    # from processing without committing offsets.
+                    self.log.dev('ON P. REVOKED WITH EMPTY ASSIGNMENT')
+                    on_timeout.info('flow_control.suspend() (empty assignment)')
+                    await T(consumer.stop_flow)()
+                    T(self.flow_control.suspend)()
+                    T(self.flow_control.clear)()
+                    await T(self._producer_flush)(on_timeout)
+                    if self.in_transaction:
+                        await T(consumer.transactions.on_partitions_revoked)(
+                            revoked)
                 on_timeout.info('+send signal: on_partitions_revoked')
                 await T(self.on_partitions_revoked.send)(revoked)
                 on_timeout.info('-send signal: on_partitions_revoked')
