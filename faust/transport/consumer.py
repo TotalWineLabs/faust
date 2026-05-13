@@ -524,6 +524,7 @@ class Consumer(Service, ConsumerT):
     def _reset_state(self) -> None:
         self._active_partitions = None
         self._paused_partitions = set()
+        self._rebalance_occurred = False
         self.can_resume_flow.clear()
         self.can_stop_flow.clear()
         self.flow_active = True
@@ -538,22 +539,24 @@ class Consumer(Service, ConsumerT):
         tps = self._active_partitions
         if tps is None:
             return self._set_active_tps(self.assignment())
-        # Reconcile: remove any TPs no longer in actual assignment
-        # to prevent zombie partitions that process without committing.
-        assignment = self.assignment()
-        if assignment:
-            orphaned = tps - assignment
-            if orphaned:
-                self.log.warning(
-                    'Removing orphaned partitions from active set '
-                    '(not in assignment): %r', orphaned,
-                )
-                tps.difference_update(orphaned)
-                for tp in orphaned:
-                    self._acked.pop(tp, None)
-                    self._acked_index.pop(tp, None)
-                    self._read_offset.pop(tp, None)
-                    self._committed_offset.pop(tp, None)
+        if self._rebalance_occurred:
+            self._rebalance_occurred = False
+            # Reconcile: remove any TPs no longer in actual assignment
+            # to prevent zombie partitions that process without committing.
+            assignment = self.assignment()
+            if assignment:
+                orphaned = tps - assignment
+                if orphaned:
+                    self.log.warning(
+                        'Removing orphaned partitions from active set '
+                        '(not in assignment): %r', orphaned,
+                    )
+                    tps.difference_update(orphaned)
+                    for tp in orphaned:
+                        self._acked.pop(tp, None)
+                        self._acked_index.pop(tp, None)
+                        self._read_offset.pop(tp, None)
+                        self._committed_offset.pop(tp, None)
         assert all(isinstance(x, TP) for x in tps)
         return tps
 
@@ -674,6 +677,7 @@ class Consumer(Service, ConsumerT):
             #   the callbacks mutate our active list.
             await T(self._on_partitions_assigned, partitions=assigned)(
                 assigned)
+        self._rebalance_occurred = True
         self.app.on_rebalance_return()
 
     @abc.abstractmethod
