@@ -538,6 +538,22 @@ class Consumer(Service, ConsumerT):
         tps = self._active_partitions
         if tps is None:
             return self._set_active_tps(self.assignment())
+        # Reconcile: remove any TPs no longer in actual assignment
+        # to prevent zombie partitions that process without committing.
+        assignment = self.assignment()
+        if assignment:
+            orphaned = tps - assignment
+            if orphaned:
+                self.log.warning(
+                    'Removing orphaned partitions from active set '
+                    '(not in assignment): %r', orphaned,
+                )
+                tps.difference_update(orphaned)
+                for tp in orphaned:
+                    self._acked.pop(tp, None)
+                    self._acked_index.pop(tp, None)
+                    self._read_offset.pop(tp, None)
+                    self._committed_offset.pop(tp, None)
         assert all(isinstance(x, TP) for x in tps)
         return tps
 
@@ -1001,7 +1017,7 @@ class Consumer(Service, ConsumerT):
             else:
                 revoked[tp] = offset
         if revoked:
-            self.log.info(
+            self.log.warning(
                 'Discarded commit for revoked partitions that '
                 'will be eventually processed again: %r',
                 revoked,
