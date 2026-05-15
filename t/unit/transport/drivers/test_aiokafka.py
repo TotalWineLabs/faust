@@ -1,3 +1,4 @@
+import asyncio
 import aiokafka
 import faust
 import opentracing
@@ -1584,6 +1585,55 @@ class test_Producer:
     def test_supports_headers(self, *, producer):
         producer._producer.client.api_version = (0, 11)
         assert producer.supports_headers()
+
+
+class test_MultiTXNProducer:
+
+    def test__constructor__linger_ms_on_accumulator_only(self):
+        loop = asyncio.new_event_loop()
+        try:
+            client = Mock(name='client')
+            client.cluster = Mock(name='cluster')
+            with patch.object(mod, 'AIOKafkaClient', return_value=client), \
+                    patch.object(mod, 'MessageAccumulator') as accumulator_cls, \
+                    patch.object(mod, 'Sender') as sender_cls:
+                producer = mod.MultiTXNProducer(
+                    loop=loop,
+                    bootstrap_servers='localhost:9092',
+                    linger_ms=150,
+                )
+                producer._closed = True
+
+                assert accumulator_cls.call_args.kwargs['linger_ms'] == 150
+                assert 'linger_ms' not in sender_cls.call_args.kwargs
+        finally:
+            loop.close()
+
+    @pytest.mark.asyncio
+    async def test__init_transaction__linger_ms_on_accumulator_only(self):
+        loop = asyncio.new_event_loop()
+        try:
+            client = Mock(name='client')
+            client.cluster = Mock(name='cluster')
+            sender = Mock(name='sender')
+            sender.start = AsyncMock()
+            with patch.object(mod, 'AIOKafkaClient', return_value=client), \
+                    patch.object(mod, 'MessageAccumulator') as accumulator_cls, \
+                    patch.object(mod, 'Sender', return_value=sender) as sender_cls, \
+                    patch.object(mod, 'TransactionManager'):
+                producer = mod.MultiTXNProducer(
+                    loop=loop,
+                    bootstrap_servers='localhost:9092',
+                    linger_ms=150,
+                )
+                producer._closed = True
+
+                await producer._init_transaction('tid')
+
+                assert accumulator_cls.call_args_list[1].kwargs['linger_ms'] == 150
+                assert 'linger_ms' not in sender_cls.call_args_list[1].kwargs
+        finally:
+            loop.close()
 
 
 class test_Transport:

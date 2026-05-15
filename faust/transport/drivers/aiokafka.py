@@ -1263,14 +1263,14 @@ class MultiTXNProducer(BaseProducer):
             self._max_batch_size, 
             self._compression_attrs,
             self._request_timeout_ms / 1000,
-            txn_manager=None)
+            txn_manager=None,
+            linger_ms=self._linger_ms)
 
         self._sender = Sender(
             self.client,
             txn_manager=None,
             acks=self._acks,
             retry_backoff_ms=self._retry_backoff_ms,
-            linger_ms=self._linger_ms,
             message_accumulator=self._message_accumulator,
             request_timeout_ms=self._request_timeout_ms,
         )
@@ -1390,6 +1390,7 @@ class MultiTXNProducer(BaseProducer):
             self._compression_attrs,
             self._request_timeout_ms / 1000,
             txn_manager=txn_manager,
+            linger_ms=self._linger_ms,
         )
         if hasattr(accumulator, 'set_api_version'):
             accumulator.set_api_version(self._received_api_version)
@@ -1398,7 +1399,6 @@ class MultiTXNProducer(BaseProducer):
             acks=self._acks,
             txn_manager=txn_manager,
             retry_backoff_ms=self._retry_backoff_ms,
-            linger_ms=self._linger_ms,
             message_accumulator=accumulator,
             request_timeout_ms=self._request_timeout_ms,
         )
