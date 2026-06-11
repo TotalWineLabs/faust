@@ -112,6 +112,9 @@ class Store(StoreT[KT, VT], Service):
     def prefix_scan(self, prefix: bytes) -> Iterator[Tuple[bytes, bytes]]:
         ...
 
+    def prefix_scan_for_partition(self, prefix: bytes, partition: int) -> Iterator[Tuple[bytes, bytes]]:
+        ...
+
     @property
     def label(self) -> str:
         """Return short description of this store."""
@@ -188,7 +191,11 @@ class SerializedStore(Store[KT, VT]):
         ...
 
     @abc.abstractmethod
-    def _prefix_scan(self, prefix: bytes) -> Iterator[Tuple[bytes, bytes]]:  # pragma: no cover
+    def _prefix_scan(self, prefix: bytes, partition: int = None) -> Iterator[Tuple[bytes, bytes]]:  # pragma: no cover
+        ...
+
+    @abc.abstractmethod
+    def _iteritems_for_partition(self, partition: int) -> Iterator[Tuple[bytes, bytes]]:  # pragma: no cover
         ...
 
     def apply_changelog_batch(self, batch: Iterable[EventT],
@@ -270,12 +277,17 @@ class SerializedStore(Store[KT, VT]):
     def del_for_partition(self, key, partition: int) -> None:
         return self._del(self._encode_key(key), partition=partition)
     
-    def prefix_scan(self, prefix: KT) -> Iterator[Tuple[KT, VT]]:
+    def prefix_scan(self, prefix: KT, partition: int = None) -> Iterator[Tuple[KT, VT]]:
         # json serializer wraps prefix value in quotes
         # we truncate the last quote character to ensure the prefix is matched
         if self.key_serializer == 'json':
             _prefix = self._encode_key(prefix)[:-1]
         else:
             _prefix = self._encode_key(prefix)
-        for key, value in self._prefix_scan(_prefix):
+        for key, value in self._prefix_scan(_prefix, partition=partition):
+            yield self._decode_key(key), self._decode_value(value)
+
+    def items_for_partition(self, partition: int) -> Iterator[Tuple[KT, VT]]:
+        """Iterate all (key, value) pairs in a specific partition."""
+        for key, value in self._iteritems_for_partition(partition):
             yield self._decode_key(key), self._decode_value(value)    

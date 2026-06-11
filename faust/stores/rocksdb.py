@@ -730,6 +730,10 @@ class Store(base.SerializedStore):
         for db in self._dbs_for_actives():
             yield from self._visible_items(db)
 
+    def _iteritems_for_partition(self, partition: int) -> Iterator[Tuple[bytes, bytes]]:
+        db = self._db_for_partition(partition)
+        yield from self._visible_items(db)
+
     def _clear(self) -> None:
         raise NotImplementedError("TODO")  # XXX cannot reset tables
 
@@ -755,7 +759,7 @@ class Store(base.SerializedStore):
         # not work if the table name has dots in it (Issue #184).
         return path.with_name(f"{path.name}{suffix}")
 
-    def _prefix_scan(self, prefix: bytes) -> Iterator[Tuple[bytes, bytes]]:
+    def _prefix_scan(self, prefix: bytes, partition: int = None) -> Iterator[Tuple[bytes, bytes]]:
         if (
             self.rocksdb_options.prefix_extractor_enabled
             and len(prefix) > self.rocksdb_options.prefix_max_length
@@ -769,7 +773,11 @@ class Store(base.SerializedStore):
         if self.use_rocksdict:
             read_options = rocksdict.ReadOptions()
             read_options.set_prefix_same_as_start(True)
-            for db in self._dbs_for_actives():
+            if partition is not None:
+                dbs = [self._db_for_partition(partition)]
+            else:
+                dbs = self._dbs_for_actives()
+            for db in dbs:
                 it = db.iter(read_options)
                 it.seek(prefix)
                 while it.valid():
