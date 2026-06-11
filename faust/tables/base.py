@@ -651,9 +651,13 @@ class Collection(Service, CollectionT):
         if self._on_changelog_event:
             await self._on_changelog_event(event)
 
-    def prefix_scan(self, prefix: Any) -> Iterator[Tuple[Any, Any]]:
+    def prefix_scan(self, prefix: Any, partition: int = None) -> Iterator[Tuple[Any, Any]]:
         """Scan table for keys matching a prefix."""
-        yield from self.data.prefix_scan(prefix)
+        yield from self.data.prefix_scan(prefix, partition=partition)
+
+    def items_for_partition(self, partition: int) -> Iterator[Tuple[Any, Any]]:
+        """Iterate all (key, value) pairs in a specific partition."""
+        yield from self.data.items_for_partition(partition)
         
     @property
     def label(self) -> str:
