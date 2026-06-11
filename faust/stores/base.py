@@ -112,9 +112,6 @@ class Store(StoreT[KT, VT], Service):
     def prefix_scan(self, prefix: bytes) -> Iterator[Tuple[bytes, bytes]]:
         ...
 
-    def prefix_scan_for_partition(self, prefix: bytes, partition: int) -> Iterator[Tuple[bytes, bytes]]:
-        ...
-
     @property
     def label(self) -> str:
         """Return short description of this store."""
