@@ -406,6 +406,10 @@ class ConsumerT(ServiceT):
         ...
 
     @abc.abstractmethod
+    def request_rejoin(self) -> None:
+        ...
+
+    @abc.abstractmethod
     def verify_recovery_event_path(self, now: float, tp: TP) -> None:
         ...
 

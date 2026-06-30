@@ -281,6 +281,10 @@ class Consumer(ThreadDelegateConsumer):
             tp,
         )
 
+    def request_rejoin(self) -> None:
+        """Request the consumer to rejoin the group (trigger rebalance)."""
+        self._thread.request_rejoin()
+
     async def on_stop(self) -> None:
         """Call when consumer is stopping."""
         await super().on_stop()
@@ -795,6 +799,11 @@ class AIOKafkaConsumerThread(ConsumerThread):
         else:
             return cast(Mapping[TP, int],
                         await consumer.end_offsets(partitions))
+
+    def request_rejoin(self) -> None:
+        """Request the consumer to rejoin the group (trigger rebalance)."""
+        consumer = self._ensure_consumer()
+        consumer._coordinator.request_rejoin()
 
     def _ensure_consumer(self) -> aiokafka.AIOKafkaConsumer:
         if self._consumer is None:
