@@ -1690,6 +1690,15 @@ class Producer(base.Producer):
     def key_partition(self, topic: str, key: bytes) -> TP:
         """Hash key to determine partition destination."""
         producer = self._ensure_producer()
+        client = producer.client
+        if client is None:
+            raise NotReady('Producer client not yet connected')
+        if producer._metadata.partitions_for_topic(topic) is None:
+            client.add_topic(topic)
+            client.force_metadata_update()
+            raise NotReady(
+                f'Producer metadata for topic {topic!r} not available yet'
+            )
         partition = producer._partition(
             topic,
             partition=None,
