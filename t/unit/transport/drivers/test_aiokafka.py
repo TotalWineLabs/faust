@@ -1582,6 +1582,21 @@ class test_Producer:
         x = producer.key_partition('topic', 'k')
         assert x == TP('topic', _producer._partition.return_value)
 
+    def test_key_partition__no_metadata(self, *, producer, _producer):
+        _producer.client = Mock(
+            name='client',
+            add_topic=Mock(),
+            force_metadata_update=Mock(),
+        )
+        _producer._metadata = Mock(name='metadata')
+        _producer._metadata.partitions_for_topic.return_value = None
+
+        with pytest.raises(NotReady, match="metadata for topic 'topic' not available"):
+            producer.key_partition('topic', 'k')
+
+        _producer.client.add_topic.assert_called_once_with('topic')
+        _producer.client.force_metadata_update.assert_called_once_with()
+
     def test_supports_headers(self, *, producer):
         producer._producer.client.api_version = (0, 11)
         assert producer.supports_headers()
