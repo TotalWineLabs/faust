@@ -501,6 +501,36 @@ class test_Consumer:
         ]
 
     @pytest.mark.asyncio
+    async def test_getmany__pause_only_affects_next_poll(self, *, consumer):
+        consumer._to_message = lambda tp, record: record
+        self._setup_records(
+            consumer,
+            active_partitions={TP1, TP2},
+            records={
+                TP1: ['A', 'B'],
+                TP2: ['C', 'D'],
+            },
+        )
+        consumer.scheduler = Mock()
+
+        def se(records):
+            yield TP1, 'A'
+            consumer.pause_partitions([TP2])
+            yield TP2, 'C'
+            yield TP1, 'B'
+            yield TP2, 'D'
+
+        consumer.scheduler.iterate.side_effect = se
+
+        assert [a async for a in consumer.getmany(1.0)] == [
+            (TP1, 'A'),
+            (TP2, 'C'),
+            (TP1, 'B'),
+            (TP2, 'D'),
+        ]
+        assert consumer._active_partitions == {TP1}
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize('client_only', [
         False,
         True,
@@ -517,6 +547,27 @@ class test_Consumer:
         expected_active = None if client_only else {TP1}
         ret = await consumer._wait_next_records(1.0)
         assert ret == ({TP1: ['A', 'B', 'C']}, expected_active)
+
+    @pytest.mark.asyncio
+    async def test__wait_next_records__returns_active_partition_snapshot(
+            self, *, consumer):
+        self._setup_records(
+            consumer,
+            active_partitions={TP1, TP2},
+            records={
+                TP1: ['A'],
+                TP2: ['B'],
+            },
+        )
+
+        records, active_partitions = await consumer._wait_next_records(1.0)
+
+        assert records == {
+            TP1: ['A'],
+            TP2: ['B'],
+        }
+        assert active_partitions == {TP1, TP2}
+        assert active_partitions is not consumer._active_partitions
 
     @pytest.mark.asyncio
     async def test__wait_next_records__flow_inactive(self, *, consumer):

@@ -763,7 +763,10 @@ class Consumer(Service, ConsumerT):
         if is_client_only:
             active_partitions = None
         else:
-            active_partitions = self._get_active_partitions()
+            # Snapshot active partitions once per poll so pause/resume only
+            # affects future fetches instead of filtering records already
+            # drained for this batch.
+            active_partitions = self._get_active_partitions().copy()
 
         records: RecordMap = {}
         if is_client_only or active_partitions:
