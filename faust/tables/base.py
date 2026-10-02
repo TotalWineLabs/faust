@@ -655,6 +655,14 @@ class Collection(Service, CollectionT):
         """Scan table for keys matching a prefix."""
         yield from self.data.prefix_scan(prefix, partition=partition)
 
+    def size_estimate(self) -> int:
+        """Return an approximation of the number of keys in this table.
+
+        Cheap alternative to ``len(table)``, which scans every key when the
+        table is backed by RocksDB.
+        """
+        return self.data.size_estimate()
+
     def items_for_partition(self, partition: int) -> Iterator[Tuple[Any, Any]]:
         """Iterate all (key, value) pairs in a specific partition."""
         yield from self.data.items_for_partition(partition)
