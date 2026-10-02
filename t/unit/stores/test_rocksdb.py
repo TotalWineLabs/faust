@@ -458,6 +458,73 @@ class test_Store:
         store._dbs_for_actives = Mock(return_value=dbs)
         assert store._size() == 5
 
+    def _db_with_estimate(self, name, estimate, *, use_rocksdict):
+        db = self.new_db(name)
+        if use_rocksdict:
+            db.property_int_value.return_value = estimate
+        else:
+            db.get_property.return_value = (
+                None if estimate is None else str(estimate).encode())
+        return db
+
+    @pytest.mark.parametrize('use_rocksdict', [True, False])
+    def test_size_estimate(self, *, store, use_rocksdict):
+        store.use_rocksdict = use_rocksdict
+        # the estimate of each db includes the persisted offset entry
+        dbs = [
+            self._db_with_estimate('db1', 4, use_rocksdict=use_rocksdict),
+            self._db_with_estimate('db2', 3, use_rocksdict=use_rocksdict),
+        ]
+        store._dbs_for_actives = Mock(return_value=dbs)
+
+        assert store.size_estimate() == 5
+
+        for db in dbs:
+            if use_rocksdict:
+                db.property_int_value.assert_called_once_with(
+                    'rocksdb.estimate-num-keys')
+            else:
+                db.get_property.assert_called_once_with(
+                    b'rocksdb.estimate-num-keys')
+
+    @pytest.mark.parametrize('use_rocksdict', [True, False])
+    @pytest.mark.parametrize('estimate', [None, 0, 1])
+    def test_size_estimate__empty_or_unavailable(
+            self, *, store, use_rocksdict, estimate):
+        store.use_rocksdict = use_rocksdict
+        store._dbs_for_actives = Mock(return_value=[
+            self._db_with_estimate(
+                'db1', estimate, use_rocksdict=use_rocksdict),
+        ])
+        assert store.size_estimate() == 0
+
+    def test_size_estimate__does_not_scan_keys(self, *, store):
+        store.use_rocksdict = True
+        db = self._db_with_estimate('db1', 10, use_rocksdict=True)
+        store._dbs_for_actives = Mock(return_value=[db])
+
+        assert store.size_estimate() == 9
+
+        db.keys.assert_not_called()
+        db.iter.assert_not_called()
+        db.iterkeys.assert_not_called()
+
+    def test_size_estimate__only_active_partitions(self, *, store, table):
+        store.use_rocksdict = True
+        table.changelog_topic_name = 'clog'
+        table.is_global = False
+        store.app.assignor.assigned_actives = Mock(
+            return_value={TP('clog', 1)})
+        store._dbs = {
+            0: self._db_with_estimate('db0', 100, use_rocksdict=True),
+            1: self._db_with_estimate('db1', 11, use_rocksdict=True),
+        }
+
+        assert store.size_estimate() == 10
+
+        table.is_global = True
+        assert store.size_estimate() == 10 + 99
+
     def test__iterkeys(self, *, store):
         dbs = self._setup_keys(
             db1=[

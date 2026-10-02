@@ -56,5 +56,9 @@ class test_Store:
     def test_persisted_offset(self, *, store):
         assert store.persisted_offset(TP('foo', 0)) is None
 
+    def test_size_estimate(self, *, store):
+        store.data.update({'foo': 1, 'bar': 2})
+        assert store.size_estimate() == 2
+
     def test_reset_state(self, *, store):
         store.reset_state()

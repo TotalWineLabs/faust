@@ -50,6 +50,7 @@ DEFAULT_BLOOM_FILTER_SIZE = 3
 DEFAULT_SET_CACHE_INDEX_AND_FILTER_BLOCKS = False
 DEFAULT_PREFIX_EXTRACTOR_ENABLED = False
 DEFAULT_PREFIX_MAX_LENGTH = 12
+ESTIMATE_NUM_KEYS_PROPERTY = 'rocksdb.estimate-num-keys'
 ERRORS_ROCKS_IO_ERROR = (
     Exception  # use general exception to avoid missing exception issues
 )
@@ -688,6 +689,24 @@ class Store(base.SerializedStore):
 
     def _size(self) -> int:
         return sum(self._size1(db) for db in self._dbs_for_actives())
+
+    def size_estimate(self) -> int:
+        """Return the estimated number of keys in the active partitions.
+
+        Unlike :meth:`__len__`, this does not iterate over the keys: it reads
+        RocksDB's ``rocksdb.estimate-num-keys`` property, which is derived
+        from memtable and SST metadata. Keys that were overwritten but not
+        yet compacted away are counted more than once.
+        """
+        return sum(self._size_estimate1(db) for db in self._dbs_for_actives())
+
+    def _size_estimate1(self, db: DB) -> int:
+        if self.use_rocksdict:
+            estimate = db.property_int_value(ESTIMATE_NUM_KEYS_PROPERTY)
+        else:
+            estimate = db.get_property(ESTIMATE_NUM_KEYS_PROPERTY.encode())
+        # the persisted changelog offset is stored in the db, but is not a key
+        return max(int(estimate or 0) - 1, 0)
 
     def _visible_keys(self, db: DB) -> Iterator[bytes]:
         if self.use_rocksdict:

@@ -239,6 +239,10 @@ class CollectionT(ServiceT, JoinableT):
         ...
 
     @abc.abstractmethod
+    def size_estimate(self) -> int:
+        ...
+
+    @abc.abstractmethod
     def key_join(
         self,
         right_table: 'CollectionT',

@@ -112,6 +112,16 @@ class Store(StoreT[KT, VT], Service):
     def prefix_scan(self, prefix: bytes) -> Iterator[Tuple[bytes, bytes]]:
         ...
 
+    def size_estimate(self) -> int:
+        """Return an approximation of the number of keys in this store.
+
+        Unlike ``len(store)``, which must be exact and may have to scan
+        every key, this must be cheap to call (e.g. from a periodic timer).
+        Drivers that cannot estimate without scanning fall back to
+        ``len(store)``.
+        """
+        return len(self)
+
     @property
     def label(self) -> str:
         """Return short description of this store."""
