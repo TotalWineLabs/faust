@@ -34,6 +34,7 @@ class test_RocksDBOptions:
         'max_write_buffer_number',
         'target_file_size_base',
         'block_cache_size',
+        'block_cache',
         'block_cache_compressed_size',
         'bloom_filter_size',
     ])
@@ -50,6 +51,7 @@ class test_RocksDBOptions:
         assert (opts.target_file_size_base ==
                 rocksdb.DEFAULT_TARGET_FILE_SIZE_BASE)
         assert opts.block_cache_size == rocksdb.DEFAULT_BLOCK_CACHE_SIZE
+        assert opts.block_cache is None
         assert (opts.block_cache_compressed_size ==
                 rocksdb.DEFAULT_BLOCK_CACHE_COMPRESSED_SIZE)
         assert opts.bloom_filter_size == rocksdb.DEFAULT_BLOOM_FILTER_SIZE
@@ -61,6 +63,25 @@ class test_RocksDBOptions:
             rocks.DB.assert_called_once_with(
                 'foo.db', opts.as_options(), read_only=True)
             assert db is rocks.DB()
+
+    def test_as_options__python_rocksdb_block_cache(self):
+        cache = Mock(name='cache')
+        with patch('faust.stores.rocksdb.rocksdb') as rocks:
+            RocksDBOptions(use_rocksdict=False, block_cache=cache).as_options()
+
+            _, kwargs = rocks.BlockBasedTableFactory.call_args
+            assert kwargs['block_cache'] is cache
+            rocks.LRUCache.assert_called_once_with(
+                rocksdb.DEFAULT_BLOCK_CACHE_COMPRESSED_SIZE)
+
+    def test_as_options__python_rocksdb_block_cache_per_db_by_default(self):
+        with patch('faust.stores.rocksdb.rocksdb') as rocks:
+            RocksDBOptions(
+                use_rocksdict=False, block_cache_size=1234).as_options()
+
+            _, kwargs = rocks.BlockBasedTableFactory.call_args
+            assert kwargs['block_cache'] is rocks.LRUCache.return_value
+            rocks.LRUCache.assert_any_call(1234)
 
 
 class test_Store:
