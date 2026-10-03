@@ -112,6 +112,12 @@ class test_Collection:
         data = table._data = Mock(name='_data')
         assert table.persisted_offset(TP1) == data.persisted_offset()
 
+    def test_size_estimate(self, *, table):
+        data = table._data = Mock(name='_data', autospec=Store)
+        data.size_estimate.return_value = 42
+        assert table.size_estimate() == 42
+        data.size_estimate.assert_called_once_with()
+
     @pytest.mark.asyncio
     async def test_need_active_standby_for(self, *, table):
         table._data = Mock(

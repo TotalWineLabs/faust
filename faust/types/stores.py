@@ -102,3 +102,7 @@ class StoreT(ServiceT, FastUserDict[KT, VT]):
     @abc.abstractmethod
     def prefix_scan(self, prefix: KT) -> Iterator[Tuple[KT, VT]]:
         ...
+
+    @abc.abstractmethod
+    def size_estimate(self) -> int:
+        ...

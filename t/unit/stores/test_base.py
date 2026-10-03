@@ -30,6 +30,12 @@ class MyStore(Store):
         ...
 
 
+class MySizedStore(MyStore):
+
+    def __len__(self):
+        return 7
+
+
 class test_Store:
 
     @pytest.fixture
@@ -47,6 +53,11 @@ class test_Store:
 
     def test_set_persisted_offset(self, *, store):
         store.set_persisted_offset(TP('foo', 0), 30303)
+
+    def test_size_estimate__defaults_to_len(self, *, app):
+        store = MySizedStore(
+            url='foo://', app=app, table=Mock(name='table'))
+        assert store.size_estimate() == 7
 
     @pytest.mark.asyncio
     async def test_need_active_standby_for(self, *, store):
@@ -124,6 +135,9 @@ class MySerializedStore(SerializedStore):
     def _prefix_scan(self, prefix: bytes):
         ...        
 
+    def _iteritems_for_partition(self, partition: int):
+        ...
+
 
 class test_SerializedStore:
 
@@ -181,3 +195,7 @@ class test_SerializedStore:
         store['foo'] = '303'
         store.clear()
         assert not len(store)
+
+    def test_size_estimate__defaults_to_exact_size(self, *, store):
+        store.keep.update({b'foo': b'1', b'bar': b'2'})
+        assert store.size_estimate() == len(store) == 2
