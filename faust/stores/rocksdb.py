@@ -96,13 +96,20 @@ class _DBValueTuple(NamedTuple):
 
 
 class RocksDBOptions:
-    """Options required to open a RocksDB database."""
+    """Options required to open a RocksDB database.
+
+    ``block_cache`` is an optional cache object (``rocksdict.Cache`` or
+    ``rocksdb.LRUCache``) shared by every database opened with these
+    options, which bounds their total block cache memory. When unset, each
+    database gets its own cache of ``block_cache_size`` bytes.
+    """
 
     max_open_files: Optional[int] = DEFAULT_MAX_OPEN_FILES
     write_buffer_size: int = DEFAULT_WRITE_BUFFER_SIZE
     max_write_buffer_number: int = DEFAULT_MAX_WRITE_BUFFER_NUMBER
     target_file_size_base: int = DEFAULT_TARGET_FILE_SIZE_BASE
     block_cache_size: int = DEFAULT_BLOCK_CACHE_SIZE
+    block_cache: Optional[Any] = None
     block_cache_compressed_size: int = DEFAULT_BLOCK_CACHE_COMPRESSED_SIZE
     bloom_filter_size: int = DEFAULT_BLOOM_FILTER_SIZE
     set_cache_index_and_filter_blocks: bool = DEFAULT_SET_CACHE_INDEX_AND_FILTER_BLOCKS
@@ -118,6 +125,7 @@ class RocksDBOptions:
         max_write_buffer_number: Optional[int] = None,
         target_file_size_base: Optional[int] = None,
         block_cache_size: Optional[int] = None,
+        block_cache: Optional[Any] = None,
         block_cache_compressed_size: Optional[int] = None,
         bloom_filter_size: Optional[int] = None,
         set_cache_index_and_filter_blocks: Optional[bool] = None,
@@ -136,6 +144,8 @@ class RocksDBOptions:
             self.target_file_size_base = target_file_size_base
         if block_cache_size is not None:
             self.block_cache_size = block_cache_size
+        if block_cache is not None:
+            self.block_cache = block_cache
         if block_cache_compressed_size is not None:
             self.block_cache_compressed_size = block_cache_compressed_size
         if bloom_filter_size is not None:
@@ -153,11 +163,11 @@ class RocksDBOptions:
     def open(self, path: Path, *, read_only: bool = False) -> DB:
         """Open RocksDB database using this configuration."""
         if self.use_rocksdict:
-            db_options = self.as_options()
-            db_options.set_db_paths(
-                [rocksdict.DBPath(str(path), self.target_file_size_base)]
+            options = self.as_options()
+            # rocksdict reopens existing DBs with their persisted options unless passed here.
+            db = DB(
+                str(path), options=options, column_families={"default": options}
             )
-            db = DB(str(path), options=self.as_options())
             db.set_read_options(rocksdict.ReadOptions())
             return db
         else:
@@ -177,7 +187,9 @@ class RocksDBOptions:
                 self.bloom_filter_size, block_based=True
             )
             table_factory_options.set_block_cache(
-                rocksdict.Cache(self.block_cache_size)
+                self.block_cache
+                if self.block_cache is not None
+                else rocksdict.Cache(self.block_cache_size)
             )
             table_factory_options.set_index_type(
                 rocksdict.BlockBasedIndexType.binary_search()
@@ -203,7 +215,11 @@ class RocksDBOptions:
                 target_file_size_base=self.target_file_size_base,
                 table_factory=rocksdb.BlockBasedTableFactory(
                     filter_policy=rocksdb.BloomFilterPolicy(self.bloom_filter_size),
-                    block_cache=rocksdb.LRUCache(self.block_cache_size),
+                    block_cache=(
+                        self.block_cache
+                        if self.block_cache is not None
+                        else rocksdb.LRUCache(self.block_cache_size)
+                    ),
                     block_cache_compressed=rocksdb.LRUCache(
                         self.block_cache_compressed_size
                     ),
