@@ -435,6 +435,10 @@ class Consumer(Service, ConsumerT):
     #: Keeps track of the currently committed offset in each TP.
     _committed_offset: MutableMapping[TP, Optional[int]]
 
+    #: The first offset read from each TP that had no committed offset to
+    #: start from: commits of that TP must start there.
+    _first_read_offset: MutableMapping[TP, int]
+
     #: The consumer.wait_empty() method will set this to be notified
     #: when something acks a message.
     _waiting_for_ack: Optional[asyncio.Future] = None
@@ -498,6 +502,7 @@ class Consumer(Service, ConsumerT):
         self._acked_index = defaultdict(set)
         self._read_offset = defaultdict(lambda: None)
         self._committed_offset = defaultdict(lambda: None)
+        self._first_read_offset = {}
         self._unacked_messages = WeakSet()
         self._waiting_for_ack = None
         self._time_start = monotonic()
@@ -557,6 +562,7 @@ class Consumer(Service, ConsumerT):
                         self._acked_index.pop(tp, None)
                         self._read_offset.pop(tp, None)
                         self._committed_offset.pop(tp, None)
+                        self._first_read_offset.pop(tp, None)
         assert all(isinstance(x, TP) for x in tps)
         return tps
 
@@ -587,6 +593,10 @@ class Consumer(Service, ConsumerT):
             if offset is not None
         }
         self._committed_offset.update(committed_offsets)
+        for tp in _committed_offsets:
+            # Reading starts over: from the committed offset, or, without
+            # one, from the first record read.
+            self._first_read_offset.pop(ensure_TP(tp), None)
 
     @abc.abstractmethod
     async def seek_to_committed(self) -> Mapping[TP, int]:
@@ -600,6 +610,7 @@ class Consumer(Service, ConsumerT):
         await self._seek(partition, offset)
         # set new read offset so we will reread messages
         self._read_offset[ensure_TP(partition)] = offset if offset else None
+        self._first_read_offset.pop(ensure_TP(partition), None)
 
     @abc.abstractmethod
     async def _seek(self, partition: TP, offset: int) -> None:
@@ -658,7 +669,8 @@ class Consumer(Service, ConsumerT):
                 self._acked.pop(tp, None)
                 self._acked_index.pop(tp, None)
                 self._read_offset.pop(tp, None)
-                self._committed_offset.pop(tp, None)            
+                self._committed_offset.pop(tp, None)
+                self._first_read_offset.pop(tp, None)
             await T(self._on_partitions_revoked, partitions=revoked)(revoked)
             
 
@@ -1100,9 +1112,14 @@ class Consumer(Service, ConsumerT):
             #  ^-- gap
             # self._committed_offset[tp] is 32 (next offset to consume after 31)
             # the return value will be None (the same as 31)
-            if self._committed_offset[tp]:
-                if min(acked) - self._committed_offset[tp] > 0:
-                    return None
+            # A partition with no committed offset yet starts at the first
+            # offset read from it: without that check, its first run of acked
+            # offsets would be committed past an unacked record before it.
+            start = self._committed_offset[tp]
+            if start is None:
+                start = self._first_read_offset.get(tp)
+            if start is not None and min(acked) > start:
+                return None
 
             # Note: acked is always kept sorted because it's a SortedSet.
             # find first list of consecutive numbers
@@ -1130,9 +1147,11 @@ class Consumer(Service, ConsumerT):
         if committed is not None:
             # committed is "next offset to consume", so last processed is committed - 1
             offset_from = max(offset_from, committed)
-        # intervaltree intervals exclude the end
-        if offset_from <= offset_to:
-            gap_for_tp.addi(offset_from, offset_to + 1)
+        # The gap is [offset_from, offset_to): offset_to is the record that
+        # was fetched, which its stream still has to ack. Intervaltree
+        # intervals exclude the end too.
+        if offset_from < offset_to:
+            gap_for_tp.addi(offset_from, offset_to)
             # sleep 0 to allow other coroutines to get some loop time
             # for example, to answer health checks while building the gap
             await asyncio.sleep(0)
@@ -1178,13 +1197,16 @@ class Consumer(Service, ConsumerT):
                         offset = message.offset
                         r_offset = get_read_offset(tp)
                         if r_offset is None or offset >= r_offset:
+                            if r_offset is None:
+                                self._first_read_offset[tp] = offset
                             gap = offset - (r_offset or 0)
                             # We have a gap in incoming message.
                             # Note: tracking gaps is slow but important for offset commit management.
                             # Changelog topics can have large and frequent gaps due to compaction, but we
                             # don't commit offsets to kafka for changelog topics so we can skip gap tracking for them.
                             # and improve performance for table recovery procedure for highly compacted changelog topics.
-                            if gap > 1 and r_offset and not self._is_changelog_tp(tp):
+                            # A read offset of 0 is an offset like any other.
+                            if gap > 1 and r_offset is not None and not self._is_changelog_tp(tp):
                                 acks_enabled = acks_enabled_for(message.topic)
                                 if acks_enabled:
                                     await self._add_gap(tp, r_offset + 1, offset)

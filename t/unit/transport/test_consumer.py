@@ -5,7 +5,7 @@ from faust.app._attached import Attachments
 from faust.exceptions import AlreadyConfiguredWarning
 from faust.tables.manager import TableManager
 from faust.transport.base import Producer, Transport
-from intervaltree import IntervalTree
+from intervaltree import Interval, IntervalTree
 from faust.transport.consumer import (
     Consumer,
     ConsumerThread,
@@ -384,6 +384,9 @@ class MockedConsumerAbstractMethods:
     def key_partition(self, *args, **kwargs):
         ...
 
+    def request_rejoin(self):
+        ...
+
 
 class MyConsumer(MockedConsumerAbstractMethods, Consumer):
 
@@ -626,8 +629,9 @@ class test_Consumer:
 
     @pytest.mark.asyncio
     async def test_perform_seek(self, *, consumer):
-        consumer._read_offset.update(TP1=3001, TP2=3002)
-        consumer._committed_offset.update(TP1=301, TP2=302)
+        consumer._read_offset.update({TP1: 3001, TP2: 3002})
+        consumer._committed_offset.update({TP1: 301, TP2: 302})
+        consumer._first_read_offset.update({TP1: 7, TP2: 0})
         consumer.seek_to_committed = AsyncMock(return_value={
             TP1: 4001,
             TP2: 0,
@@ -635,11 +639,16 @@ class test_Consumer:
 
         await consumer.perform_seek()
 
-        assert consumer._read_offset[TP1] == 4001
-        assert consumer._read_offset[TP2] == 0
+        # The committed offset is the next one to read; the read offset is
+        # the last one processed.
+        assert consumer._read_offset[TP1] == 4000
+        assert consumer._read_offset[TP2] is None
 
         assert consumer._committed_offset[TP1] == 4001
         assert consumer._committed_offset[TP2] is None
+
+        # Reading starts over.
+        assert not consumer._first_read_offset
 
     @pytest.mark.asyncio
     async def test_commit__client_only(self, *, consumer):
@@ -651,9 +660,12 @@ class test_Consumer:
         consumer._read_offset[TP1] = 301
         consumer._seek = AsyncMock()
 
+        consumer._first_read_offset[TP1] = 7
+
         await consumer.seek(TP1, 401)
 
         assert consumer._read_offset[TP1] == 401
+        assert TP1 not in consumer._first_read_offset
         consumer._seek.assert_called_once_with(TP1, 401)
 
     def test_stop_flow(self, *, consumer):
@@ -706,11 +718,13 @@ class test_Consumer:
     @pytest.mark.asyncio
     async def test_on_partitions_revoked(self, *, consumer):
         consumer._on_partitions_revoked = AsyncMock(name='opr')
+        consumer._first_read_offset[TP('foo', 0)] = 3
         tps = {TP('foo', 0), TP('bar', 2)}
         await consumer.on_partitions_revoked(tps)
 
         consumer._on_partitions_revoked.assert_called_once_with(
             tps)
+        assert not consumer._first_read_offset
 
     @pytest.mark.asyncio
     async def test_on_partitions_revoked__updates_active(self, *, consumer):
@@ -1012,10 +1026,10 @@ class test_Consumer:
 
     @pytest.mark.parametrize('tp,acked,expected_offset', [
         (TP1, [], None),
-        (TP1, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 10),
-        (TP1, [1, 2, 3, 4, 5, 6, 7, 8, 10], 8),
-        (TP1, [1, 2, 3, 4, 6, 7, 8, 10], 4),
-        (TP1, [1, 3, 4, 6, 7, 8, 10], 1),
+        (TP1, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 11),
+        (TP1, [1, 2, 3, 4, 5, 6, 7, 8, 10], 9),
+        (TP1, [1, 2, 3, 4, 6, 7, 8, 10], 5),
+        (TP1, [1, 3, 4, 6, 7, 8, 10], 2),
     ])
     def test_new_offset(self, tp, acked, expected_offset, *, consumer):
         consumer._acked[tp] = SortedSet(acked)
@@ -1023,10 +1037,10 @@ class test_Consumer:
 
     @pytest.mark.parametrize('tp,acked,gaps,expected_offset', [
         (TP1, [], [], None),
-        (TP1, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], [], 10),
-        (TP1, [1, 2, 3, 4, 5, 6, 7, 8, 10], [(9, 10)], 10),
-        (TP1, [1, 2, 3, 4, 6, 7, 8, 10], [(5, 6)], 8),
-        (TP1, [1, 3, 4, 6, 7, 8, 10], [(2, 3), (5, 6), (9, 10)], 10),
+        (TP1, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], [], 11),
+        (TP1, [1, 2, 3, 4, 5, 6, 7, 8, 10], [(9, 10)], 11),
+        (TP1, [1, 2, 3, 4, 6, 7, 8, 10], [(5, 6)], 9),
+        (TP1, [1, 3, 4, 6, 7, 8, 10], [(2, 3), (5, 6), (9, 10)], 11),
     ])
     def test_new_offset_with_gaps(self, tp, acked, gaps,
                                   expected_offset, *, consumer):
@@ -1043,19 +1057,139 @@ class test_Consumer:
         await consumer.on_task_error(KeyError())
         consumer.commit.assert_called_once_with()
 
-    def test__add_gap(self, *, consumer):
+    @pytest.mark.asyncio
+    async def test__add_gap(self, *, consumer):
         tp = TP1
         consumer._committed_offset[tp] = 299
-        consumer._add_gap(TP1, 300, 343)
+        await consumer._add_gap(TP1, 300, 343)
 
-        assert consumer._gap[tp] == list(range(300, 343))
+        # 300-342 are missing; 343 is the record that was fetched.
+        assert sorted(consumer._gap[tp]) == [Interval(300, 343)]
 
-    def test__add_gap__previous_to_committed(self, *, consumer):
+    @pytest.mark.asyncio
+    async def test__add_gap__previous_to_committed(self, *, consumer):
         tp = TP1
         consumer._committed_offset[tp] = 400
-        consumer._add_gap(TP1, 300, 343)
+        await consumer._add_gap(TP1, 300, 343)
 
-        assert consumer._gap[tp] == []
+        assert not consumer._gap[tp]
+
+    @pytest.mark.asyncio
+    async def test__add_gap__nothing_missing(self, *, consumer):
+        await consumer._add_gap(TP1, 5, 5)
+
+        assert not consumer._gap[TP1]
+
+    @pytest.mark.parametrize('acked,expected_offset', [
+        ([1, 2, 3], None),
+        ([0, 1, 2, 3], 4),
+    ])
+    def test_new_offset__starts_at_first_offset_read(
+            self, acked, expected_offset, *, consumer):
+        # Nothing committed yet: commits start at the first offset read.
+        consumer._first_read_offset[TP1] = 0
+        consumer._acked[TP1] = SortedSet(acked)
+        assert consumer._new_offset(TP1) == expected_offset
+
+    def test_new_offset__committed_offset_comes_first(self, *, consumer):
+        consumer._committed_offset[TP1] = 10
+        consumer._first_read_offset[TP1] = 0
+        consumer._acked[TP1] = SortedSet([10, 11])
+        assert consumer._new_offset(TP1) == 12
+
+    async def _drain(self, consumer, *offsets, tp=TP1):
+        """Run the fetch loop over records at `offsets` of `tp`, then stop."""
+        messages = [
+            Mock(name=f'message-{offset}', offset=offset, topic=tp.topic)
+            for offset in offsets
+        ]
+
+        async def getmany(timeout):
+            for message in messages:
+                yield tp, message
+            consumer._stopped.set()
+
+        consumer.getmany = getmany
+        consumer.callback = AsyncMock(name='callback')
+        consumer.app.topics.acks_enabled_for = Mock(return_value=True)
+        consumer._is_changelog_tp = Mock(return_value=False)
+        await consumer._drain_messages(
+            Mock(name='fetcher', _stopped=asyncio.Event()))
+        assert [call.args[0].offset
+                for call in consumer.callback.await_args_list] == list(offsets)
+
+    @pytest.mark.asyncio
+    async def test_drain_messages__gap_excludes_the_record_fetched(
+            self, *, consumer):
+        # 3 and 4 were compacted away.
+        await self._drain(consumer, 0, 1, 2, 5, 6)
+        assert sorted(consumer._gap[TP1]) == [Interval(3, 5)]
+
+        # 5 is still being processed when 6 is acked.
+        consumer._acked[TP1] = SortedSet([0, 1, 2, 6])
+        assert consumer._new_offset(TP1) == 5
+
+    @pytest.mark.asyncio
+    async def test_drain_messages__gap_after_offset_zero(self, *, consumer):
+        # 1 was compacted away.
+        await self._drain(consumer, 0, 2, 3)
+        assert sorted(consumer._gap[TP1]) == [Interval(1, 2)]
+
+        consumer._acked[TP1] = SortedSet([0, 2, 3])
+        assert consumer._new_offset(TP1) == 4
+
+    @pytest.mark.asyncio
+    async def test_drain_messages__gap_after_committed_offset_one(
+            self, *, consumer):
+        # Committed at 1 (as perform_seek leaves it), and 1 was compacted away.
+        consumer._committed_offset[TP1] = 1
+        consumer._read_offset[TP1] = 0
+        await self._drain(consumer, 2, 3)
+        assert sorted(consumer._gap[TP1]) == [Interval(1, 2)]
+
+        consumer._acked[TP1] = SortedSet([2, 3])
+        assert consumer._new_offset(TP1) == 4
+
+    @pytest.mark.asyncio
+    async def test_drain_messages__commits_start_at_first_offset_read(
+            self, *, consumer):
+        # Nothing committed yet.
+        await self._drain(consumer, 0, 1, 2, 3)
+        assert consumer._first_read_offset[TP1] == 0
+
+        # 0 is still being processed when 1-3 are acked.
+        consumer._acked[TP1] = SortedSet([1, 2, 3])
+        assert consumer._new_offset(TP1) is None
+
+        consumer._acked[TP1].add(0)
+        assert consumer._new_offset(TP1) == 4
+
+    @pytest.mark.asyncio
+    async def test_drain_messages__partition_starting_past_zero(
+            self, *, consumer):
+        # Retention removed 0-9.
+        await self._drain(consumer, 10, 11)
+        assert consumer._first_read_offset[TP1] == 10
+        assert not consumer._gap[TP1]
+
+        consumer._acked[TP1] = SortedSet([11])
+        assert consumer._new_offset(TP1) is None
+        consumer._acked[TP1].add(10)
+        assert consumer._new_offset(TP1) == 12
+
+    @pytest.mark.asyncio
+    async def test_drain_messages__resumed_partition(self, *, consumer):
+        # Resumed at committed offset 10; 11 and 12 were compacted away.
+        consumer._committed_offset[TP1] = 10
+        consumer._read_offset[TP1] = 9
+        await self._drain(consumer, 10, 13)
+        assert sorted(consumer._gap[TP1]) == [Interval(11, 13)]
+        assert TP1 not in consumer._first_read_offset
+
+        consumer._acked[TP1] = SortedSet([13])
+        assert consumer._new_offset(TP1) is None
+        consumer._acked[TP1].add(10)
+        assert consumer._new_offset(TP1) == 14
 
     @pytest.mark.asyncio
     async def test_commit_handler(self, *, consumer):
