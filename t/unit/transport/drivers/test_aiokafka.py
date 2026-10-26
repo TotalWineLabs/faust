@@ -5,10 +5,13 @@ import opentracing
 import pytest
 import random
 import string
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
+from functools import partial
 from typing import Optional
 
 from aiokafka.errors import CommitFailedError, IllegalStateError, KafkaError
+from aiokafka.partitioner import DefaultPartitioner
+from aiokafka.protocol.metadata import MetadataResponse_v0
 from aiokafka.structs import OffsetAndMetadata, TopicPartition
 from opentracing.ext import tags
 from faust import auth
@@ -17,6 +20,7 @@ from faust.sensors.monitor import Monitor
 from faust.transport.drivers import aiokafka as mod
 from faust.transport.drivers.aiokafka import (
     AIOKafkaConsumerThread,
+    BaseProducer,
     Consumer,
     ConsumerNotStarted,
     ConsumerRebalanceListener,
@@ -1224,6 +1228,58 @@ class MyPartitioner:
 my_partitioner = MyPartitioner()
 
 
+class FakeBroker:
+    """Answer a real aiokafka client's metadata requests from a dict."""
+
+    def __init__(self) -> None:
+        self.topics = {}  # name -> partition count
+        self.hold: Optional[asyncio.Event] = None
+        self.in_flight = asyncio.Event()
+
+    async def metadata_update(self, cluster_metadata, topics):
+        # The request names what the client tracks, or every topic when it
+        # tracks none; the answer replaces the client's cache.
+        names = list(topics) if topics else list(self.topics)
+        if self.hold is not None:
+            self.in_flight.set()
+            await self.hold.wait()
+        cluster_metadata.update_metadata(MetadataResponse_v0(
+            [(1, 'localhost', 9092)],
+            [(0, name, [(0, p, 1, [1], [1]) for p in range(self.topics[name])])
+             for name in names if name in self.topics],
+        ))
+        return True
+
+    async def create_topic(self, owner, client, topic, partitions,
+                           replication, **kwargs):
+        self.topics[topic] = partitions
+
+
+@asynccontextmanager
+async def fake_broker_client(producer, _producer):
+    """Give the producer a real aiokafka client that a FakeBroker answers."""
+    broker = FakeBroker()
+    client = aiokafka.AIOKafkaClient(bootstrap_servers='localhost:9092')
+    client._metadata_update = broker.metadata_update
+    client._sync_task = asyncio.ensure_future(client._md_synchronizer())
+    _producer.client = client
+    _producer._metadata = client.cluster
+    _producer._partitioner = DefaultPartitioner()
+    _producer._partition = partial(BaseProducer._partition, _producer)
+    producer.transport = Mock(_create_topic=broker.create_topic)
+    try:
+        yield broker
+    finally:
+        client._sync_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await client._sync_task
+
+
+def murmur_partition(key, partitions):
+    return DefaultPartitioner()(key, list(range(partitions)),
+                                list(range(partitions)))
+
+
 class test_Producer:
 
     @pytest.fixture()
@@ -1389,7 +1445,9 @@ class test_Producer:
     @pytest.mark.asyncio
     async def test_create_topic(self, *, producer, _producer):
         _producer.client = Mock(
+            add_topic=Mock(),
             force_metadata_update=AsyncMock(),
+            cluster=Mock(topics=Mock(return_value={'foo'})),
         )
         producer.transport = Mock(
             _create_topic=AsyncMock(),
@@ -1416,6 +1474,81 @@ class test_Producer:
             deleting=True,
             ensure_created=True,
         )
+        # Tracked before the refresh, so it and every later one include it.
+        assert _producer.client.mock_calls[:2] == [
+            call.add_topic('foo'),
+            call.force_metadata_update(),
+        ]
+        _producer.client.force_metadata_update.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_create_topic__refreshes_again_if_missing(
+            self, *, producer, _producer):
+        _producer.client = Mock(
+            add_topic=Mock(),
+            force_metadata_update=AsyncMock(),
+            cluster=Mock(topics=Mock(return_value=set())),
+        )
+        producer.transport = Mock(_create_topic=AsyncMock())
+        await producer.create_topic('foo', 100, 3)
+        _producer.client.add_topic.assert_called_once_with('foo')
+        assert _producer.client.force_metadata_update.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_create_topic__stopping(self, *, producer, _producer):
+        # Stopping, the topic may not have been created: it is not tracked,
+        # so the producer's metadata requests never name it.
+        _producer.client = Mock(
+            add_topic=Mock(),
+            force_metadata_update=AsyncMock(),
+            cluster=Mock(topics=Mock(return_value=set())),
+        )
+        producer.transport = Mock(_create_topic=AsyncMock())
+        producer._stopped.set()
+        await producer.create_topic('foo', 100, 3)
+        _producer.client.add_topic.assert_not_called()
+        _producer.client.force_metadata_update.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_create_topic__stays_partitionable(
+            self, *, producer, _producer):
+        # aiokafka refreshes only the topics its client tracks and replaces
+        # its cache with the answer. A created topic left untracked is dropped
+        # by the refresh after the producer's first send to another topic, and
+        # key_partition() then raises NotReady: a Kaspr scheduler lost the
+        # request it was partitioning that way.
+        async with fake_broker_client(producer, _producer) as broker:
+            await producer.create_topic('actions', 3, 1)
+
+            # The producer's first send to a topic it has not seen.
+            broker.topics['out'] = 1
+            await _producer.client._wait_on_metadata('out')
+
+            assert producer.key_partition('actions', b'request-1') == TP(
+                'actions', murmur_partition(b'request-1', 3))
+
+    @pytest.mark.asyncio
+    async def test_create_topic__declared_together(
+            self, *, producer, _producer):
+        # Topics declared together share one refresh, which may already be
+        # on the wire, asking for the topics tracked before: each topic is
+        # still partitionable as soon as its create_topic() returns.
+        async with fake_broker_client(producer, _producer) as broker:
+            broker.hold = asyncio.Event()
+            first = asyncio.ensure_future(
+                producer.create_topic('requests', 3, 1))
+            await broker.in_flight.wait()
+            second = asyncio.ensure_future(
+                producer.create_topic('actions', 3, 1))
+            for _ in range(10):
+                await asyncio.sleep(0)
+            broker.hold.set()
+            await asyncio.gather(first, second)
+
+            assert producer.key_partition('actions', b'request-1') == TP(
+                'actions', murmur_partition(b'request-1', 3))
+            assert producer.key_partition('requests', b'request-1') == TP(
+                'requests', murmur_partition(b'request-1', 3))
 
     def test__ensure_producer(self, *, producer, _producer):
         assert producer._ensure_producer() is _producer
