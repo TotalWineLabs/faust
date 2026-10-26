@@ -1607,7 +1607,21 @@ class Producer(base.Producer):
             deleting=deleting,
             ensure_created=ensure_created,
         )
-        await producer.client.force_metadata_update()  # Fixes #499
+        client = producer.client
+        if not self.should_stop:
+            # Track the topic, not just refresh it once: aiokafka refreshes
+            # only the topics its client tracks and replaces its cache with
+            # the answer, so a topic loaded here but never tracked is dropped
+            # by the next refresh, as soon as the producer first sends to
+            # another topic, and key_partition() can no longer partition for
+            # it. Stopping, the topic may not have been created, and naming
+            # it in metadata requests could have a broker create it.
+            client.add_topic(topic)
+        await client.force_metadata_update()  # Fixes #499
+        if topic not in client.cluster.topics() and not self.should_stop:
+            # That refresh was already in flight, asking for the topics
+            # tracked before this one (topics declared together share it).
+            await client.force_metadata_update()
 
     def _ensure_producer(self) -> BaseProducer:
         if self._producer is None:
