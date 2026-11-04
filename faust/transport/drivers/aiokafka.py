@@ -43,7 +43,6 @@ from aiokafka.structs import (
     OffsetAndMetadata,
     TopicPartition as _TopicPartition,
 )
-from aiokafka.util import parse_kafka_version
 from aiokafka import TopicPartition
 from aiokafka.coordinator.assignors.roundrobin import RoundRobinPartitionAssignor
 from aiokafka.partitioner import DefaultPartitioner, murmur2
@@ -191,6 +190,15 @@ def server_list(urls: List[URL], default_port: int) -> List[str]:
     """Convert list of urls to list of servers accepted by :pypi:`aiokafka`."""
     default_host = '127.0.0.1'
     return [f'{u.host or default_host}:{u.port or default_port}' for u in urls]
+
+
+def parse_kafka_version(api_version: str) -> Tuple[int, int, int]:
+    """Convert a version such as ``'0.10'`` or ``'2.1.0'`` to a 3-tuple."""
+    # aiokafka 0.15 removed aiokafka.util.parse_kafka_version.
+    parsed = tuple(int(part) for part in api_version.split('.'))
+    if not 2 <= len(parsed) <= 3:
+        raise ValueError(api_version)
+    return cast(Tuple[int, int, int], (*parsed, 0)[:3])
 
 
 class ConsumerRebalanceListener(
