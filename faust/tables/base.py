@@ -490,8 +490,9 @@ class Collection(Service, CollectionT):
     ) -> Any:
         """Join this table with another table based on a key extractor.
 
-        Returns a channel that emits ``JoinedValue(left, right)`` tuples
-        whenever either side changes.
+        Returns a channel of results keyed by this table's key: a
+        ``JoinedValue(left, right)`` whenever either side changes, or
+        ``None`` when a key's result is retracted.
         """
         from .keyjoin import KeyJoinProcessor
         processor = KeyJoinProcessor(
