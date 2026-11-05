@@ -12,6 +12,7 @@ from faust.types.joins import (
     SubscriptionInstruction,
 )
 from faust.types.tables import CollectionT
+from faust.types.events import EventT
 from faust.serializers import codecs
 
 __all__ = ['KeyJoinProcessor']
@@ -299,7 +300,7 @@ class KeyJoinProcessor(Service, KeyJoinT):
     # --- Group 8: Left-Side Response Handler ---
 
     async def _process_response(
-        self, left_pk: Any, message: Any,
+        self, left_pk: Any, message: Any, event: EventT,
     ) -> None:
         """Process a response message on the left side."""
         left_value = self.left_table.get(left_pk)
@@ -319,8 +320,48 @@ class KeyJoinProcessor(Service, KeyJoinT):
             return
 
         joined = JoinedValue(left=left_value, right=message.get('right_value'))
-        if self._output_channel is not None:
-            await self._output_channel.send(value=joined)
+        await self._emit(left_pk, joined, event)
+
+    # --- Group 9: Output ---
+
+    async def _emit(self, key: Any, value: Any, response: EventT) -> None:
+        """Hand a result to every subscriber of the output channel.
+
+        The result's event carries the response's message, and each
+        subscriber holds a reference to it: the response is committed only
+        once every subscriber has acked the result, after processing it,
+        or with ``event.ack()`` when its stream does not ack. A result
+        dropped before then, by a rebalance or a stop, leaves the response
+        uncommitted, to be read and answered again.
+        """
+        channel = self._output_channel
+        subscribers = list(channel._subscribers) if channel is not None else []
+        if not subscribers:
+            return
+        message = response.message
+        result = self.app.create_event(key, value, None, message)
+        message.incref(len(subscribers))
+        for subscriber in subscribers:
+            await self._deliver(subscriber.queue, result)
+
+    async def _deliver(self, queue: asyncio.Queue, event: EventT) -> bool:
+        """Put ``event`` on a subscriber's queue; False if it is dropped.
+
+        A rebalance suspends the app's flow, then clears every channel's
+        queue and cancels the puts waiting on them: what is dropped is
+        never acked. A put waiting for the flow to resume, as the queue's
+        own ``put`` does, would hold the response being processed, which
+        the rebalance waits for, so a result is dropped instead.
+        """
+        if not self.app.flow_control.is_active():
+            return False
+        put = asyncio.ensure_future(asyncio.Queue.put(queue, event))
+        try:
+            await asyncio.wait({put})
+        except asyncio.CancelledError:
+            put.cancel()
+            raise
+        return not put.cancelled()
 
     # --- Callback Wrappers ---
 
@@ -375,4 +416,4 @@ class KeyJoinProcessor(Service, KeyJoinT):
         async for event in self.response_topic.stream().events():
             left_pk = event.key
             message = event.value
-            await self._process_response(left_pk, message)
+            await self._process_response(left_pk, message, event)
