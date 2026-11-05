@@ -872,6 +872,40 @@ class test_Consumer:
         consumer.crash.assert_called_once_with(exc)
 
     @pytest.mark.asyncio
+    async def test_commit_tps__waits_for_delivery_first(self, *, consumer):
+        order = Mock(name='order')
+        consumer._handle_attached = AsyncMock(name='_handle_attached')
+        order.attach_mock(consumer._handle_attached.coro, 'attached')
+        consumer.app.producer.wait_delivered = AsyncMock(name='wait')
+        order.attach_mock(consumer.app.producer.wait_delivered.coro, 'wait')
+        consumer._commit_offsets = AsyncMock(name='_commit_offsets')
+        order.attach_mock(consumer._commit_offsets.coro, 'commit')
+        consumer._filter_committable_offsets = Mock(
+            name='filt', return_value={TP1: 4})
+
+        await consumer._commit_tps({TP1}, start_new_transaction=True)
+
+        assert [c[0] for c in order.mock_calls] == [
+            'attached', 'wait', 'commit']
+
+    @pytest.mark.asyncio
+    async def test_commit_tps__not_after_a_lost_message(self, *, consumer):
+        consumer._handle_attached = AsyncMock(name='_handle_attached')
+        exc = ProducerSendError()
+        consumer.app.producer.wait_delivered = AsyncMock(
+            name='wait', side_effect=exc)
+        consumer._commit_offsets = AsyncMock(name='_commit_offsets')
+        consumer.crash = AsyncMock(name='crash')
+        consumer._filter_committable_offsets = Mock(
+            name='filt', return_value={TP1: 4})
+
+        assert not await consumer._commit_tps(
+            {TP1}, start_new_transaction=True)
+
+        consumer._commit_offsets.assert_not_called()
+        consumer.crash.assert_called_once_with(exc)
+
+    @pytest.mark.asyncio
     async def test_commit_tps__no_committable(self, *, consumer):
         consumer._filter_committable_offsets = Mock(name='filt')
         consumer._filter_committable_offsets.return_value = {}

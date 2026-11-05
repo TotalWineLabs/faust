@@ -10,6 +10,7 @@ import asyncio
 from asyncio import QueueEmpty
 from typing import Any, Awaitable, Mapping, Optional, cast
 from mode import Seconds, Service
+from faust.exceptions import ProducerSendError
 from faust.types import AppT, HeadersArg
 from faust.types.tuples import FutureMessage, RecordMetadata, TP
 from faust.types.transports import ProducerBufferT, ProducerT, TransportT
@@ -108,6 +109,10 @@ class Producer(Service, ProducerT):
 
     _api_version: str
 
+    #: The first message sent while processing records that the broker
+    #: did not take: no offset is committed after one.
+    _undelivered: Optional[BaseException] = None
+
     def __init__(self, transport: TransportT,
                  loop: asyncio.AbstractEventLoop = None,
                  **kwargs: Any) -> None:
@@ -160,6 +165,28 @@ class Producer(Service, ProducerT):
         """Flush all in-flight messages."""
         # XXX subclasses must call self.buffer.flush() here.
         ...
+
+    def on_undelivered(self, exc: BaseException) -> None:
+        """Record a message sent while processing records that was lost."""
+        if self._undelivered is None:
+            self._undelivered = exc
+
+    async def wait_delivered(self) -> None:
+        """Wait until every message sent so far is delivered.
+
+        The consumer waits for this before committing offsets: what the
+        records up to them produced is then in Kafka, or, after a crash,
+        produced again by processing them again.
+
+        Raises:
+            ProducerSendError: A message sent while processing records
+                was not delivered: their output is incomplete.
+        """
+        await self.flush()
+        if self._undelivered is not None:
+            raise ProducerSendError(
+                f'Message not delivered: {self._undelivered!r}',
+            ) from self._undelivered
 
     async def create_topic(self,
                            topic: str,
