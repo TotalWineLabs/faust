@@ -24,7 +24,7 @@ import typing
 
 from typing import Any, Mapping, NamedTuple, Optional, Sequence, Tuple
 
-__version__ = '1.17.24'
+__version__ = '1.17.25'
 __author__ = 'Robinhood Markets, Inc.'
 __contact__ = 'contact@fauststream.com'
 __homepage__ = 'http://faust.readthedocs.io/'
