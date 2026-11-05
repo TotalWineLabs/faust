@@ -79,6 +79,8 @@ class Table(TableT[KT, VT], Collection):
         """Call when the value for a key in this table is set."""
         if partition is None:
             partition = self.partition_for_key(key)
+        if partition is not None:
+            self.verify_key_placement(key, partition)
         fut = self.send_changelog(partition, key, value, callback=callback)
         # partition may be None, in which case the finalized partition
         # is in fut.partition
@@ -99,7 +101,9 @@ class Table(TableT[KT, VT], Collection):
                    callback: MessageSentCallback = None) -> None:
         """Call when a key in this table is removed."""
         if partition is None:
-            partition = self.partition_for_key(key)        
+            partition = self.partition_for_key(key)
+        if partition is not None:
+            self.verify_key_placement(key, partition)
         fut = self.send_changelog(partition, key, value=None,
                                   value_serializer='raw', 
                                   callback=callback)
