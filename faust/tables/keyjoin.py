@@ -17,6 +17,16 @@ from faust.serializers import codecs
 __all__ = ['KeyJoinProcessor']
 
 
+def _text(key: Any) -> Any:
+    """A key as text.
+
+    A table with raw keys holds bytes, while the subscription message and
+    the subscription store's composite keys are text: str() would make
+    b'p1' into "b'p1'", a key that matches nothing.
+    """
+    return key.decode() if isinstance(key, bytes) else key
+
+
 class KeyJoinProcessor(Service, KeyJoinT):
     """Manages the full key join lifecycle using the subscription/response
     message-passing protocol."""
@@ -179,7 +189,7 @@ class KeyJoinProcessor(Service, KeyJoinT):
         composite keys ``"{fk}\\x00{left_pk}"`` matching the FK prefix
         and yields ``(left_pk, entry)`` pairs.
         """
-        prefix = f"{fk}\x00"
+        prefix = f"{_text(fk)}\x00"
         for key, value in self.subscription_store.prefix_scan(prefix):
             left_pk = key[len(prefix):]
             yield (left_pk, value)
@@ -250,7 +260,7 @@ class KeyJoinProcessor(Service, KeyJoinT):
         hash_value: int,
         instruction: SubscriptionInstruction,
     ) -> None:
-        msg = { "left_pk": left_pk, "hash": hash_value, "instruction": instruction.value }
+        msg = { "left_pk": _text(left_pk), "hash": hash_value, "instruction": instruction.value }
         self.subscription_topic.send_soon(key=fk, value=msg)
 
     # --- Group 6: Right-Side Subscription Processor ---
@@ -260,7 +270,7 @@ class KeyJoinProcessor(Service, KeyJoinT):
     ) -> None:
         """Process a subscription message on the right side."""
         instruction = SubscriptionInstruction(message.get('instruction'))
-        composite_key = f"{fk}\x00{message.get('left_pk')}"
+        composite_key = f"{_text(fk)}\x00{message.get('left_pk')}"
 
         if instruction == SubscriptionInstruction.UNSUBSCRIBE_ONLY:
             self.subscription_store.pop(composite_key, None)

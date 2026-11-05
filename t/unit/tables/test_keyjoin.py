@@ -243,6 +243,44 @@ class test_partitioning:
         app.producer.key_partition.assert_not_called()
 
 
+class test_raw_keys:
+    """A table with raw keys holds bytes; the join's messages hold text."""
+
+    def test_subscription_carries_the_left_key_as_text(self, processor):
+        processor._on_left_table_change(b'order1', {'product_id': b'prod1'})
+
+        [sent] = _subscription_calls(processor)
+        assert sent['key'] == b'prod1'
+        assert sent['value']['left_pk'] == 'order1'
+
+    @pytest.mark.asyncio
+    async def test_subscription_is_stored_under_text(self, processor):
+        processor.right_table.get = Mock(return_value={'name': 'Widget'})
+        await processor._process_subscription(b'prod1', {
+            'left_pk': 'order1', 'hash': 1,
+            'instruction': SUBSCRIBE_AND_RESPOND})
+
+        assert processor.subscription_store == {
+            'prod1\x00order1': {'hash': 1}}
+
+    def test_right_change_finds_subscribers_stored_under_text(
+            self, processor):
+        processor._subscription_store = _MockStore({
+            'prod1\x00order1': {'hash': 1}})
+        processor._on_right_table_change(b'prod1', {'name': 'Widget'})
+
+        [call] = processor.response_topic.send_soon.call_args_list
+        assert call.kwargs['key'] == 'order1'
+
+    def test_text_left_key_is_sent_as_the_raw_key(self, app):
+        left = app.Table('orders', partitions=4, key_type=bytes)
+        right = app.Table('products', partitions=4)
+        join = KeyJoinProcessor(app, left, right, extractor=lambda v: v)
+
+        sent, _ = join.response_topic.prepare_key('order1', None)
+        assert sent == b'order1'
+
+
 class test_process_subscription:
 
     @pytest.fixture()
