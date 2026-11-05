@@ -161,6 +161,32 @@ class test_left_table_change:
         processor._on_left_table_change('order1', None, is_delete=True)
         processor.subscription_topic.send_soon.assert_not_called()
 
+    def test_missing_foreign_key_sends_nothing(self, processor):
+        # A keyless record on the compacted subscription topic is refused
+        # by the broker, together with the batch it shares.
+        processor._on_left_table_change('order1', {'product_id': None})
+
+        processor.subscription_topic.send_soon.assert_not_called()
+        assert 'order1' not in processor.previous_fk_store
+
+    def test_foreign_key_removed_unsubscribes_and_forgets(self, processor):
+        processor.previous_fk_store['order1'] = 'prod1'
+        processor._on_left_table_change('order1', {'product_id': None})
+
+        [sent] = _subscription_calls(processor)
+        assert sent['key'] == 'prod1'
+        assert sent['value']['instruction'] == UNSUBSCRIBE_ONLY
+        assert 'order1' not in processor.previous_fk_store
+
+    def test_foreign_key_restored_subscribes_again(self, processor):
+        processor._on_left_table_change('order1', {'product_id': None})
+        processor._on_left_table_change('order1', {'product_id': 'prod1'})
+
+        [sent] = _subscription_calls(processor)
+        assert sent['key'] == 'prod1'
+        assert sent['value']['instruction'] == SUBSCRIBE_AND_RESPOND
+        assert processor.previous_fk_store['order1'] == 'prod1'
+
     def test_subscription_partition_comes_from_the_source_topic(
             self, app, processor):
         processor._on_left_table_change('order1', {'product_id': 'prod1'})

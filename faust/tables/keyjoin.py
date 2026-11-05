@@ -247,6 +247,14 @@ class KeyJoinProcessor(Service, KeyJoinT):
                 SubscriptionInstruction.UNSUBSCRIBE_ONLY,
             )
 
+        if new_fk is None:
+            # No foreign key, nothing to subscribe to. The broker refuses a
+            # keyless record on these compacted topics, and with it the
+            # batch it shares.
+            if old_fk is not None:
+                del self.previous_fk_store[key]
+            return
+
         # Subscribe (or re-subscribe) to new FK
         self._send_subscription(
             new_fk, key, current_hash,
