@@ -1,9 +1,8 @@
 """Tests for faust.tables.keyjoin — Key Join Processor."""
 import pytest
-from mode.utils.mocks import AsyncMock, Mock, patch
+from mode.utils.mocks import AsyncMock, Mock
 
 from faust.tables.keyjoin import KeyJoinProcessor
-from faust.types import TP
 from faust.types.joins import JoinedValue, SubscriptionInstruction
 
 SUBSCRIBE_AND_RESPOND = SubscriptionInstruction.SUBSCRIBE_AND_RESPOND.value
@@ -60,16 +59,6 @@ def _with_topics(proc):
 @pytest.fixture()
 def processor(app):
     return _with_topics(_make_processor(app))
-
-
-@pytest.fixture(autouse=True)
-def source_event(app):
-    """A record being processed, and the partition the producer answers."""
-    app.producer.key_partition.return_value = TP('source', 3)
-    event = Mock(name='event')
-    event.message.topic = 'source'
-    with patch('faust.tables.keyjoin.current_event', return_value=event):
-        yield event
 
 
 def _subscription_calls(proc):
@@ -187,14 +176,71 @@ class test_left_table_change:
         assert sent['value']['instruction'] == SUBSCRIBE_AND_RESPOND
         assert processor.previous_fk_store['order1'] == 'prod1'
 
-    def test_subscription_partition_comes_from_the_source_topic(
-            self, app, processor):
-        processor._on_left_table_change('order1', {'product_id': 'prod1'})
 
-        app.producer.key_partition.assert_called_once_with(
-            'source', b'prod1')
-        [sent] = _subscription_calls(processor)
-        assert sent['partition'] == 3
+class test_partitioning:
+    """The producer partitions every send by the key's bytes.
+
+    Those are the bytes the table stores the key under, so a subscription
+    lands on the partition of the right table that holds its foreign key,
+    and a response on the partition of the left table that holds its
+    record, with nothing asked of the record being processed.
+    """
+
+    @pytest.mark.parametrize('key_type,key', [
+        (None, 'prod1'),
+        (None, 42),
+        (bytes, b'prod1'),
+    ])
+    def test_subscription_key_is_the_right_table_key(
+            self, app, key_type, key):
+        left = app.Table('orders', partitions=4)
+        right = app.Table('products', partitions=4, key_type=key_type)
+        join = KeyJoinProcessor(app, left, right, extractor=lambda v: v)
+
+        sent, _ = join.subscription_topic.prepare_key(key, None)
+        assert sent == app.serializers.dumps_key(
+            right.key_type, key, serializer=right.key_serializer)
+
+    @pytest.mark.parametrize('key_type,key', [
+        (None, 'order1'),
+        (None, 7),
+        (bytes, b'order1'),
+    ])
+    def test_response_key_is_the_left_table_key(self, app, key_type, key):
+        left = app.Table('orders', partitions=4, key_type=key_type)
+        right = app.Table('products', partitions=4)
+        join = KeyJoinProcessor(app, left, right, extractor=lambda v: v)
+
+        sent, _ = join.response_topic.prepare_key(key, None)
+        assert sent == app.serializers.dumps_key(
+            left.key_type, key, serializer=left.key_serializer)
+
+    def test_internal_topics_have_their_tables_partitions(self, app):
+        left = app.Table('orders', partitions=6)
+        right = app.Table('products', partitions=4)
+        join = KeyJoinProcessor(app, left, right, extractor=lambda v: v)
+
+        assert join.subscription_topic.partitions == 4
+        assert join.response_topic.partitions == 6
+
+    @pytest.mark.asyncio
+    async def test_sends_name_no_partition(self, app, processor):
+        processor._subscription_store = _MockStore({'prod1\x00order1': {}})
+        processor.right_table.get = Mock(return_value={'name': 'Widget'})
+
+        processor._on_left_table_change('order2', {'product_id': 'prod1'})
+        await processor._process_subscription('prod1', {
+            'left_pk': 'order2', 'hash': 1,
+            'instruction': SUBSCRIBE_AND_RESPOND})
+        processor._on_right_table_change('prod1', {'name': 'Widget'})
+
+        for send in (processor.subscription_topic.send_soon,
+                     processor.response_topic.send,
+                     processor.response_topic.send_soon):
+            assert send.call_args_list
+            for call in send.call_args_list:
+                assert set(call.kwargs) == {'key', 'value'}
+        app.producer.key_partition.assert_not_called()
 
 
 class test_process_subscription:

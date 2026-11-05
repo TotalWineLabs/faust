@@ -12,7 +12,6 @@ from faust.types.joins import (
     SubscriptionInstruction,
 )
 from faust.types.tables import CollectionT
-from faust import current_event
 from faust.serializers import codecs
 
 __all__ = ['KeyJoinProcessor']
@@ -201,24 +200,6 @@ class KeyJoinProcessor(Service, KeyJoinT):
             data = codecs.dumps('json', value)
         return mmh3.hash128(data)
 
-    # --- Helpers: Key Serialization ---
-
-    def _serialize_fk(self, fk: Any) -> bytes:
-        """Serialize a foreign key using the right table's key serializer."""
-        return self.app.serializers.dumps_key(
-            self.right_table.key_type,
-            fk,
-            serializer=self.right_table.key_serializer,
-        )
-
-    def _serialize_left_pk(self, left_pk: Any) -> bytes:
-        """Serialize a left primary key using the left table's key serializer."""
-        return self.app.serializers.dumps_key(
-            self.left_table.key_type,
-            left_pk,
-            serializer=self.left_table.key_serializer,
-        )
-
     # --- Group 5: Left-Side Subscription Sender ---
 
     def _on_left_table_change(
@@ -270,8 +251,7 @@ class KeyJoinProcessor(Service, KeyJoinT):
         instruction: SubscriptionInstruction,
     ) -> None:
         msg = { "left_pk": left_pk, "hash": hash_value, "instruction": instruction.value }
-        partition = self.app.producer.key_partition(current_event().message.topic, self._serialize_fk(fk)).partition
-        self.subscription_topic.send_soon(key=fk, value=msg, partition=partition)
+        self.subscription_topic.send_soon(key=fk, value=msg)
 
     # --- Group 6: Right-Side Subscription Processor ---
 
@@ -293,8 +273,7 @@ class KeyJoinProcessor(Service, KeyJoinT):
             right_value = self.right_table.get(fk)
             left_pk = message.get('left_pk')
             response = { "right_value": right_value, "hash": message.get('hash', 0) }
-            partition = self.app.producer.key_partition(current_event().message.topic, self._serialize_left_pk(left_pk)).partition
-            await self.response_topic.send(key=left_pk, value=response, partition=partition)
+            await self.response_topic.send(key=left_pk, value=response)
 
     # --- Group 7: Right-Table Update Propagation ---
 
@@ -305,8 +284,7 @@ class KeyJoinProcessor(Service, KeyJoinT):
         right_value = None if is_delete else value
         for left_pk, entry in self.prefix_scan(key):
             response = { "right_value": right_value, "hash": entry.get('hash', 0) }
-            partition = self.app.producer.key_partition(current_event().message.topic, self._serialize_left_pk(left_pk)).partition
-            self.response_topic.send_soon(key=left_pk, value=response, partition=partition)
+            self.response_topic.send_soon(key=left_pk, value=response)
 
     # --- Group 8: Left-Side Response Handler ---
 
