@@ -8,7 +8,12 @@ from _pytest.assertion.util import _compare_eq_dict, _compare_eq_set
 from aiohttp.client import ClientError, ClientSession
 from aiohttp.web import Response
 from mode.utils.futures import all_tasks
-from mode.utils.mocks import (
+from t import mocks
+
+# Before anything imports them from mode.utils.mocks.
+mocks.install()
+
+from mode.utils.mocks import (  # noqa: E402
     AsyncContextManagerMock,
     AsyncMock,
     MagicMock,
@@ -248,7 +253,7 @@ def _recorded_tasks_at_startup(request, loop):
     try:
         request.node._tasks_at_startup
     except AttributeError:
-        request.node._tasks_at_startup = set(all_tasks())
+        request.node._tasks_at_startup = set(all_tasks(loop))
 
 
 @pytest.fixture(autouse=True)
@@ -263,7 +268,7 @@ def tasks_not_lingering(request, loop, event_loop, _recorded_tasks_at_startup):
         yield
     finally:
         tasks_then = request.node._tasks_at_startup
-        tasks_now = set(all_tasks())
+        tasks_now = set(all_tasks(loop))
         if tasks_then != tasks_now:
             request.node._tasks_at_startup = tasks_now
             pending = {task for task in tasks_now if task and not task.done()}
