@@ -4,7 +4,7 @@ import faust
 import pytest
 from faust import joins
 from faust.exceptions import Skip
-from mode.utils.contexts import ExitStack
+from contextlib import ExitStack
 from mode.utils.mocks import AsyncMock, Mock, patch
 from sortedcontainers import SortedSet
 from t.helpers import new_event
