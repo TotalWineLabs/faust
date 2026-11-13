@@ -1,10 +1,14 @@
 """Tests for faust.tables.keyjoin — Key Join Processor."""
+import asyncio
+
 import pytest
 from mode.utils.mocks import AsyncMock, Mock
 
 from faust.exceptions import KeyPlacementError
 from faust.tables.keyjoin import KeyJoinProcessor
 from faust.types.joins import JoinedValue, SubscriptionInstruction
+
+from t.helpers import new_event
 
 SUBSCRIBE_AND_RESPOND = SubscriptionInstruction.SUBSCRIBE_AND_RESPOND.value
 SUBSCRIBE_ONLY = SubscriptionInstruction.SUBSCRIBE_ONLY.value
@@ -53,7 +57,9 @@ def _with_topics(proc):
         name='subscription_topic', send=AsyncMock(), send_soon=Mock())
     proc._response_topic = Mock(
         name='response_topic', send=AsyncMock(), send_soon=Mock())
-    proc._output_channel = Mock(name='output_channel', send=AsyncMock())
+    # The output channel is real: an agent reading it is its subscriber.
+    proc.subscriber = proc._output_channel.clone(is_iterator=True)
+    proc.app.flow_control.resume()
     return proc
 
 
@@ -64,6 +70,34 @@ def processor(app):
 
 def _subscription_calls(proc):
     return [c.kwargs for c in proc.subscription_topic.send_soon.call_args_list]
+
+
+def _response_event(app, left_pk, message, offset=1):
+    """A response as the response stream hands it over: one reference."""
+    event = new_event(app, key=left_pk, value=message,
+                      topic='responses', offset=offset)
+    event.message.incref()
+    return event
+
+
+async def _respond(proc, left_pk, message, offset=1):
+    """Hand ``proc`` a response; return the response's event."""
+    event = _response_event(proc.app, left_pk, message, offset=offset)
+    await proc._process_response(left_pk, message, event)
+    return event
+
+
+def _emitted(proc, subscriber=None):
+    """The events the output channel delivered to a subscriber."""
+    queue = (subscriber or proc.subscriber).queue
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    return events
+
+
+def _results(proc):
+    return [(e.key, e.value) for e in _emitted(proc)]
 
 
 class test_compute_hash:
@@ -520,36 +554,34 @@ class test_process_response:
 
     @pytest.mark.asyncio
     async def test_current_hash_emits_joined_value(self, processor):
-        await processor._process_response(
-            'order1', self._response({'name': 'Widget'}))
+        await _respond(processor, 'order1', self._response({'name': 'Widget'}))
 
-        processor._output_channel.send.assert_called_once_with(
-            value=JoinedValue(left=self.LEFT, right={'name': 'Widget'}))
+        assert _results(processor) == [
+            ('order1', JoinedValue(left=self.LEFT, right={'name': 'Widget'}))]
 
     @pytest.mark.asyncio
     async def test_stale_hash_discards(self, processor):
-        await processor._process_response(
-            'order1', self._response({'name': 'Widget'}, hash=12345))
-        processor._output_channel.send.assert_not_called()
+        await _respond(
+            processor, 'order1', self._response({'name': 'Widget'}, hash=1))
+        assert _results(processor) == []
 
     @pytest.mark.asyncio
     async def test_deleted_left_record_discards(self, processor):
         processor.left_table.get = Mock(return_value=None)
-        await processor._process_response(
-            'order1', self._response({'name': 'Widget'}))
-        processor._output_channel.send.assert_not_called()
+        await _respond(processor, 'order1', self._response({'name': 'Widget'}))
+        assert _results(processor) == []
 
     @pytest.mark.asyncio
     async def test_inner_join_skips_missing_right_value(self, processor):
-        await processor._process_response('order1', self._response(None))
-        processor._output_channel.send.assert_not_called()
+        await _respond(processor, 'order1', self._response(None))
+        assert _results(processor) == []
 
     @pytest.mark.asyncio
     async def test_left_join_emits_missing_right_value(self, processor):
         processor.inner = False
-        await processor._process_response('order1', self._response(None))
-        processor._output_channel.send.assert_called_once_with(
-            value=JoinedValue(left=self.LEFT, right=None))
+        await _respond(processor, 'order1', self._response(None))
+        assert _results(processor) == [
+            ('order1', JoinedValue(left=self.LEFT, right=None))]
 
 
 class test_end_to_end:
@@ -571,11 +603,10 @@ class test_end_to_end:
 
         response = processor.response_topic.send.call_args.kwargs
         processor.left_table.get = Mock(return_value=left_value)
-        await processor._process_response(response['key'], response['value'])
+        await _respond(processor, response['key'], response['value'])
 
-        processor._output_channel.send.assert_called_once_with(
-            value=JoinedValue(
-                left=left_value, right={'name': 'Widget', 'price': 9.99}))
+        assert _results(processor) == [('order1', JoinedValue(
+            left=left_value, right={'name': 'Widget', 'price': 9.99}))]
 
     @pytest.mark.asyncio
     async def test_right_update_reaches_every_subscriber(self, processor):
@@ -588,10 +619,10 @@ class test_end_to_end:
 
         processor._on_right_table_change('prod1', {'name': 'Updated'})
         for c in processor.response_topic.send_soon.call_args_list:
-            await processor._process_response(
-                c.kwargs['key'], c.kwargs['value'])
+            await _respond(processor, c.kwargs['key'], c.kwargs['value'])
 
-        assert processor._output_channel.send.call_count == 2
+        assert sorted(key for key, _ in _results(processor)) == [
+            'order1', 'order2']
 
     @pytest.mark.asyncio
     async def test_response_to_an_older_version_is_discarded(self, processor):
@@ -604,9 +635,125 @@ class test_end_to_end:
         second = {'product_id': 'prod1', 'qty': 10}
         processor._on_left_table_change('order1', second)
         processor.left_table.get = Mock(return_value=second)
-        await processor._process_response(response['key'], response['value'])
+        await _respond(processor, response['key'], response['value'])
 
-        processor._output_channel.send.assert_not_called()
+        assert _results(processor) == []
+
+
+class test_output_acks:
+    """A response is committed only once its result is acked downstream."""
+
+    LEFT = {'product_id': 'prod1', 'qty': 5}
+
+    @pytest.fixture()
+    def processor(self, processor):
+        processor.left_table.get = Mock(return_value=self.LEFT)
+        return processor
+
+    def _response(self):
+        return {'right_value': {'name': 'Widget'},
+                'hash': KeyJoinProcessor.compute_hash(self.LEFT)}
+
+    @pytest.mark.asyncio
+    async def test_result_carries_the_response(self, processor):
+        response = await _respond(processor, 'order1', self._response())
+
+        [result] = _emitted(processor)
+        assert result.message is response.message
+        assert result.key == 'order1'
+
+    @pytest.mark.asyncio
+    async def test_response_waits_for_the_result_ack(self, processor):
+        response = await _respond(processor, 'order1', self._response())
+        [result] = _emitted(processor)
+
+        response.ack()  # the response stream is done with it
+        assert not response.message.acked
+        result.ack()  # the agent reading the output is done with it
+        assert response.message.acked
+
+    @pytest.mark.asyncio
+    async def test_every_subscriber_acks(self, processor):
+        second = processor._output_channel.clone(is_iterator=True)
+        response = await _respond(processor, 'order1', self._response())
+        [first_result] = _emitted(processor)
+        [second_result] = _emitted(processor, second)
+
+        response.ack()
+        first_result.ack()
+        assert not response.message.acked
+        second_result.ack()
+        assert response.message.acked
+
+    @pytest.mark.asyncio
+    async def test_without_subscribers_nothing_is_held(self, processor):
+        del processor.subscriber
+        import gc
+        gc.collect()
+        response = await _respond(processor, 'order1', self._response())
+
+        response.ack()
+        assert response.message.acked
+
+    @pytest.mark.asyncio
+    async def test_discarded_response_is_not_held(self, processor):
+        response = await _respond(
+            processor, 'order1', {'right_value': None, 'hash': 1})
+
+        response.ack()
+        assert response.message.acked
+
+    @pytest.mark.asyncio
+    async def test_result_is_dropped_while_the_flow_is_suspended(
+            self, processor):
+        # A rebalance: waiting for the flow would hold the response the
+        # rebalance waits for.
+        processor.app.flow_control.suspend()
+        response = await asyncio.wait_for(
+            _respond(processor, 'order1', self._response()), timeout=1)
+
+        assert _emitted(processor) == []
+        response.ack()
+        assert not response.message.acked
+
+    @pytest.mark.asyncio
+    async def test_put_cleared_by_a_rebalance_drops_the_result(self, app):
+        processor = _with_topics(_make_processor(app))
+        processor._output_channel = app.channel(maxsize=1)
+        processor.subscriber = processor._output_channel.clone(
+            is_iterator=True)
+        processor.left_table.get = Mock(return_value=self.LEFT)
+        await _respond(processor, 'order0', self._response(), offset=0)
+
+        blocked = asyncio.ensure_future(
+            _respond(processor, 'order1', self._response()))
+        await asyncio.sleep(0.01)
+        assert not blocked.done()
+        app.flow_control.suspend()
+        app.flow_control.clear()
+        response = await asyncio.wait_for(blocked, timeout=1)
+
+        assert _emitted(processor) == []
+        response.ack()
+        assert not response.message.acked
+
+    @pytest.mark.asyncio
+    async def test_stopping_cancels_a_blocked_put(self, app):
+        processor = _with_topics(_make_processor(app))
+        processor._output_channel = app.channel(maxsize=1)
+        processor.subscriber = processor._output_channel.clone(
+            is_iterator=True)
+        processor.left_table.get = Mock(return_value=self.LEFT)
+        await _respond(processor, 'order0', self._response(), offset=0)
+
+        blocked = asyncio.ensure_future(
+            _respond(processor, 'order1', self._response()))
+        await asyncio.sleep(0.01)
+        blocked.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await blocked
+        assert processor.subscriber.queue._putters == type(
+            processor.subscriber.queue._putters)()
 
 
 class test_wiring:
