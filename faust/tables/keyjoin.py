@@ -5,6 +5,9 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from mode import Service
 
+from faust.exceptions import KeyPlacementError
+from faust.streams import current_event
+
 from faust.types import AppT, TopicT
 from faust.types.joins import (
     KeyJoinT,
@@ -15,6 +18,17 @@ from faust.types.tables import CollectionT
 from faust.serializers import codecs
 
 __all__ = ['KeyJoinProcessor']
+
+E_KEY_PLACEMENT = '''\
+Table {table!r} is joined with {other!r}, but key {key!r} is being written \
+to partition {partition}, while the join reads it from partition \
+{expected}: the partition of {serialized!r}, the key serialized with the \
+table's key serializer {serializer!r}.
+
+Write the table by the key of the record being processed, give that record's \
+topic the table's key serializer, and partition the topic by key the way \
+Kafka's default partitioner does (murmur2).
+'''
 
 
 def _text(key: Any) -> Any:
@@ -62,6 +76,10 @@ class KeyJoinProcessor(Service, KeyJoinT):
         _ = self.previous_fk_store
 
         self._output_channel = self.app.channel()
+
+        # A row written where the join does not look is a result lost.
+        left_table.register_key_placement_check(self._check_left_placement)
+        right_table.register_key_placement_check(self._check_right_placement)
 
     # --- Group 2: Internal Topic Creation ---
 
@@ -209,6 +227,61 @@ class KeyJoinProcessor(Service, KeyJoinT):
         else:
             data = codecs.dumps('json', value)
         return mmh3.hash128(data)
+
+    # --- Group 4b: Row Placement ---
+
+    def _check_left_placement(self, key: Any, partition: int) -> None:
+        # Responses reach a left row on the response topic's partition.
+        self._check_placement(
+            self.left_table, self.right_table, self.response_topic,
+            key, partition)
+
+    def _check_right_placement(self, key: Any, partition: int) -> None:
+        # Subscriptions reach a right row on the subscription topic's.
+        self._check_placement(
+            self.right_table, self.left_table, self.subscription_topic,
+            key, partition)
+
+    def _check_placement(self, table: CollectionT, other: CollectionT,
+                         topic: TopicT, key: Any, partition: int) -> None:
+        """Refuse to write a row where the join will not look for it.
+
+        The join finds a row by its key alone: on the partition the
+        producer's partitioner picks for the key's bytes. Anywhere else,
+        the row is never joined, so the write is refused and the app
+        stops; the record being processed is kept from being committed,
+        to be read again once the app is fixed.
+        """
+        expected = self._partition_of(topic, key)
+        if expected is None or expected == partition:
+            return
+        exc = KeyPlacementError(E_KEY_PLACEMENT.format(
+            table=table.name,
+            other=other.name,
+            key=key,
+            partition=partition,
+            expected=expected,
+            serialized=topic.prepare_key(key, None)[0],
+            serializer=table.key_serializer,
+        ))
+        event = current_event()
+        if event is not None:
+            # A reference nothing releases: the offset is never committed.
+            event.message.incref()
+        asyncio.ensure_future(self.crash(exc))
+        raise exc
+
+    def _partition_of(self, topic: TopicT, key: Any) -> Optional[int]:
+        """Partition the join's producer sends ``key`` to on ``topic``."""
+        key_bytes, _ = topic.prepare_key(key, None)
+        partitioner = getattr(self.app.producer, 'partitioner', None)
+        if key_bytes is None or partitioner is None:
+            return None
+        count = (self.app.consumer.topic_partitions(topic.get_topic_name())
+                 or topic.partitions
+                 or self.app.conf.topic_partitions)
+        partitions = list(range(count))
+        return partitioner(key_bytes, partitions, partitions)
 
     # --- Group 5: Left-Side Subscription Sender ---
 

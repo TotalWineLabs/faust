@@ -167,6 +167,9 @@ class Collection(Service, CollectionT):
         self._on_key_set_callbacks: List[Callable] = []
         self._on_key_del_callbacks: List[Callable] = []
 
+        # Checks of where a key is written, run before the write (key joins)
+        self._key_placement_checks: List[Callable[[Any, int], None]] = []
+
         # Aliases
         self._sensor_on_get = self.app.sensors.on_table_get
         self._sensor_on_set = self.app.sensors.on_table_set
@@ -193,6 +196,20 @@ class Collection(Service, CollectionT):
             self._on_key_del_callbacks.remove(callback)
         except ValueError:
             pass
+
+    def register_key_placement_check(
+            self, check: Callable[[Any, int], None]) -> None:
+        """Run ``check(key, partition)`` before every write to a partition.
+
+        Unlike the key-set and key-del callbacks, a check runs before
+        the write and its exception propagates: raising refuses the write.
+        """
+        self._key_placement_checks.append(check)
+
+    def verify_key_placement(self, key: Any, partition: int) -> None:
+        """Run the placement checks for a key about to be written."""
+        for check in self._key_placement_checks:
+            check(key, partition)
 
     def _serializer_from_type(
             self, typ: Optional[ModelArg]) -> Optional[CodecArg]:

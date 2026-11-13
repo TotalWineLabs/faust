@@ -2,6 +2,7 @@
 import pytest
 from mode.utils.mocks import AsyncMock, Mock
 
+from faust.exceptions import KeyPlacementError
 from faust.tables.keyjoin import KeyJoinProcessor
 from faust.types.joins import JoinedValue, SubscriptionInstruction
 
@@ -279,6 +280,156 @@ class test_raw_keys:
 
         sent, _ = join.response_topic.prepare_key('order1', None)
         assert sent == b'order1'
+
+
+class _processing:
+    """Run the block as if a stream were processing ``event``."""
+
+    def __init__(self, event):
+        self.event = event
+
+    def __enter__(self):
+        import weakref
+        from faust.streams import _current_event
+        self._token = _current_event.set(weakref.ref(self.event))
+        return self.event
+
+    def __exit__(self, *exc_info):
+        from faust.streams import _current_event
+        _current_event.reset(self._token)
+
+
+class test_placement:
+    """A joined table refuses a row the join would not find.
+
+    The join reaches a row on the partition its key's bytes hash to; a
+    table writes a row on the partition of the record being processed.
+    """
+
+    PARTITIONS = 4
+
+    @pytest.fixture()
+    def join(self, app):
+        from aiokafka.partitioner import DefaultPartitioner
+        app.producer.partitioner = DefaultPartitioner()
+        orders = app.Table('orders', partitions=self.PARTITIONS)
+        products = app.Table('products', partitions=self.PARTITIONS)
+        join = KeyJoinProcessor(
+            app, orders, products, extractor=lambda v: v['product_id'])
+        join.crash = AsyncMock(name='crash')
+        return join
+
+    def _home(self, app, key_bytes, count=PARTITIONS):
+        partitions = list(range(count))
+        return app.producer.partitioner(key_bytes, partitions, partitions)
+
+    def _event(self, app, partition):
+        from t.helpers import new_event
+        return new_event(app, topic='source', partition=partition, offset=7)
+
+    @pytest.mark.asyncio
+    async def test_row_where_the_join_reads_it_is_written(self, app, join):
+        home = self._home(app, b'"prod1"')
+        with _processing(self._event(app, home)) as event:
+            join.right_table['prod1'] = {'name': 'Widget'}
+
+        assert join.right_table.data['prod1'] == {'name': 'Widget'}
+        assert event.message.refcount == 0
+        join.crash.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_misplaced_row_is_refused(self, app, join):
+        home = self._home(app, b'"prod1"')
+        elsewhere = (home + 1) % self.PARTITIONS
+        with _processing(self._event(app, elsewhere)):
+            with pytest.raises(KeyPlacementError):
+                join.right_table['prod1'] = {'name': 'Widget'}
+
+        assert 'prod1' not in join.right_table.data
+        app.producer.send_soon.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_misplaced_row_stops_the_app(self, app, join):
+        import asyncio
+        home = self._home(app, b'"prod1"')
+        with _processing(self._event(app, (home + 1) % self.PARTITIONS)):
+            with pytest.raises(KeyPlacementError) as raised:
+                join.right_table['prod1'] = {'name': 'Widget'}
+        await asyncio.sleep(0)
+
+        join.crash.assert_called_once_with(raised.value)
+
+    @pytest.mark.asyncio
+    async def test_misplaced_record_is_kept_from_commit(self, app, join):
+        # The stream's ack leaves one reference: the offset stays
+        # uncommitted, and the record is read again after the restart.
+        home = self._home(app, b'"prod1"')
+        with _processing(self._event(app, (home + 1) % self.PARTITIONS)) \
+                as event:
+            event.message.incref()  # the stream's reference
+            with pytest.raises(KeyPlacementError):
+                join.right_table['prod1'] = {'name': 'Widget'}
+            assert not event.ack()
+
+        assert event.message.refcount == 1
+        assert not event.message.acked
+
+    @pytest.mark.asyncio
+    async def test_misplaced_delete_is_refused(self, app, join):
+        home = self._home(app, b'"prod1"')
+        with _processing(self._event(app, home)):
+            join.right_table['prod1'] = {'name': 'Widget'}
+        with _processing(self._event(app, (home + 1) % self.PARTITIONS)):
+            with pytest.raises(KeyPlacementError):
+                del join.right_table['prod1']
+
+        assert 'prod1' in join.right_table.data
+
+    @pytest.mark.asyncio
+    async def test_left_rows_are_checked_too(self, app, join):
+        home = self._home(app, b'"order1"')
+        with _processing(self._event(app, (home + 1) % self.PARTITIONS)):
+            with pytest.raises(KeyPlacementError) as raised:
+                join.left_table['order1'] = {'product_id': 'prod1'}
+
+        message = str(raised.value)
+        assert "'orders' is joined with 'products'" in message
+        assert f'from partition {home}' in message
+        assert "key serializer 'json'" in message
+
+    @pytest.mark.asyncio
+    async def test_raw_keys_are_hashed_as_written(self, app):
+        from aiokafka.partitioner import DefaultPartitioner
+        app.producer.partitioner = DefaultPartitioner()
+        orders = app.Table('orders', partitions=4, key_type=bytes)
+        products = app.Table('products', partitions=4, key_type=bytes)
+        KeyJoinProcessor(app, orders, products, extractor=lambda v: v)
+        home = self._home(app, b'prod1')
+
+        with _processing(self._event(app, home)):
+            products[b'prod1'] = b'Widget'
+
+        assert products.data[b'prod1'] == b'Widget'
+
+    @pytest.mark.asyncio
+    async def test_partition_count_is_the_topics(self, app, join):
+        # Metadata says 8: the producer partitions over 8, not the 4
+        # the table was declared with.
+        app.consumer.topic_partitions = Mock(return_value=8)
+        home = self._home(app, b'"prod1"', count=8)
+        with _processing(self._event(app, home)):
+            join.right_table['prod1'] = {'name': 'Widget'}
+
+        assert 'prod1' in join.right_table.data
+
+    @pytest.mark.asyncio
+    async def test_tables_outside_joins_are_not_checked(self, app, join):
+        other = app.Table('other', partitions=self.PARTITIONS)
+        home = self._home(app, b'"prod1"')
+        with _processing(self._event(app, (home + 1) % self.PARTITIONS)):
+            other['prod1'] = 1
+
+        assert other.data['prod1'] == 1
 
 
 class test_process_subscription:

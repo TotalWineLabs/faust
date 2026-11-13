@@ -18,6 +18,7 @@ __all__ = [
     'ProducerSendError',
     'ConsumerNotStarted',
     'PartitionsMismatch',
+    'KeyPlacementError',
     'ConsistencyError',
 ]
 
@@ -103,6 +104,10 @@ class ConsumerNotStarted(NotReady):
 
 class PartitionsMismatch(FaustError):
     """Number of partitions between related topics differ."""
+
+
+class KeyPlacementError(FaustError):
+    """A joined table's key is written where its key join cannot find it."""
 
 
 class ConsistencyError(FaustError):
