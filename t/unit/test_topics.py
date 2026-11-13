@@ -12,6 +12,13 @@ class Dummy(Record):
     foo: int
 
 
+def _producer_delivering(delivery):
+    """A producer whose send hands back ``delivery``, still pending."""
+    async def send(*args, **kwargs):
+        return delivery
+    return Mock(name='producer', send=send)
+
+
 class test_Topic:
 
     @pytest.fixture
@@ -245,6 +252,61 @@ class test_Topic:
         app.sensors.on_send_error.assert_called_once_with(
             producer, exc, state,
         )
+        producer.on_undelivered.assert_not_called()
+
+    def test_on_published__error_while_processing(self, *, topic, app):
+        # Nobody waits for this message: the commit must not pass it.
+        app.sensors.on_send_error = Mock(name='on_send_error')
+        producer = Mock(name='producer')
+        fut = Mock(name='fut', autospec=asyncio.Future)
+        exc = fut.result.side_effect = KeyError()
+        message = Mock(name='message', autospec=Message)
+        topic._on_published(fut, message, producer, Mock(name='state'),
+                            during_processing=True)
+
+        producer.on_undelivered.assert_called_once_with(exc)
+
+    def test_send_soon__marks_messages_sent_while_processing(
+            self, *, topic, app):
+        app.producer.send_soon = Mock(name='send_soon')
+        with patch('faust.topics.current_event', Mock(return_value=None)):
+            outside = topic.send_soon(key=b'k', value=b'v')
+        with patch('faust.topics.current_event'):
+            during = topic.send_soon(key=b'k', value=b'v')
+
+        assert outside.during_processing is False
+        assert during.during_processing is True
+
+    @pytest.mark.asyncio
+    async def test_publish_message__buffered_message_keeps_its_mark(
+            self, *, topic, app):
+        # The buffer sends it with no record being processed.
+        sent = asyncio.Future()
+        producer = _producer_delivering(sent)
+        topic._get_producer = AsyncMock(return_value=producer)
+        fut = topic.as_future_message(key=b'k', value=b'v')
+        fut.during_processing = True
+        with patch('faust.topics.current_event', Mock(return_value=None)):
+            await topic.publish_message(fut)
+        exc = KeyError('lost')
+        sent.set_exception(exc)
+        await asyncio.sleep(0)
+
+        producer.on_undelivered.assert_called_once_with(exc)
+
+    @pytest.mark.asyncio
+    async def test_publish_message__sent_outside_processing(
+            self, *, topic, app):
+        sent = asyncio.Future()
+        producer = _producer_delivering(sent)
+        topic._get_producer = AsyncMock(return_value=producer)
+        fut = topic.as_future_message(key=b'k', value=b'v')
+        with patch('faust.topics.current_event', Mock(return_value=None)):
+            await topic.publish_message(fut)
+        sent.set_exception(KeyError('lost'))
+        await asyncio.sleep(0)
+
+        producer.on_undelivered.assert_not_called()
 
     def test_aiter_when_iterator(self, *, topic):
         topic.is_iterator = True

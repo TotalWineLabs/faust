@@ -169,6 +169,14 @@ class ProducerT(ServiceT):
         ...
 
     @abc.abstractmethod
+    def on_undelivered(self, exc: BaseException) -> None:
+        ...
+
+    @abc.abstractmethod
+    async def wait_delivered(self) -> None:
+        ...
+
+    @abc.abstractmethod
     async def begin_transaction(self, transactional_id: str) -> None:
         ...
 
