@@ -5,6 +5,9 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from mode import Service
 
+from faust.exceptions import KeyPlacementError
+from faust.streams import current_event
+
 from faust.types import AppT, TopicT
 from faust.types.joins import (
     KeyJoinT,
@@ -12,10 +15,31 @@ from faust.types.joins import (
     SubscriptionInstruction,
 )
 from faust.types.tables import CollectionT
-from faust import current_event
+from faust.types.events import EventT
 from faust.serializers import codecs
 
 __all__ = ['KeyJoinProcessor']
+
+E_KEY_PLACEMENT = '''\
+Table {table!r} is joined with {other!r}, but key {key!r} is being written \
+to partition {partition}, while the join reads it from partition \
+{expected}: the partition of {serialized!r}, the key serialized with the \
+table's key serializer {serializer!r}.
+
+Write the table by the key of the record being processed, give that record's \
+topic the table's key serializer, and partition the topic by key the way \
+Kafka's default partitioner does (murmur2).
+'''
+
+
+def _text(key: Any) -> Any:
+    """A key as text.
+
+    A table with raw keys holds bytes, while the subscription message and
+    the subscription store's composite keys are text: str() would make
+    b'p1' into "b'p1'", a key that matches nothing.
+    """
+    return key.decode() if isinstance(key, bytes) else key
 
 
 class KeyJoinProcessor(Service, KeyJoinT):
@@ -53,6 +77,10 @@ class KeyJoinProcessor(Service, KeyJoinT):
         _ = self.previous_fk_store
 
         self._output_channel = self.app.channel()
+
+        # A row written where the join does not look is a result lost.
+        left_table.register_key_placement_check(self._check_left_placement)
+        right_table.register_key_placement_check(self._check_right_placement)
 
     # --- Group 2: Internal Topic Creation ---
 
@@ -180,7 +208,7 @@ class KeyJoinProcessor(Service, KeyJoinT):
         composite keys ``"{fk}\\x00{left_pk}"`` matching the FK prefix
         and yields ``(left_pk, entry)`` pairs.
         """
-        prefix = f"{fk}\x00"
+        prefix = f"{_text(fk)}\x00"
         for key, value in self.subscription_store.prefix_scan(prefix):
             left_pk = key[len(prefix):]
             yield (left_pk, value)
@@ -201,23 +229,60 @@ class KeyJoinProcessor(Service, KeyJoinT):
             data = codecs.dumps('json', value)
         return mmh3.hash128(data)
 
-    # --- Helpers: Key Serialization ---
+    # --- Group 4b: Row Placement ---
 
-    def _serialize_fk(self, fk: Any) -> bytes:
-        """Serialize a foreign key using the right table's key serializer."""
-        return self.app.serializers.dumps_key(
-            self.right_table.key_type,
-            fk,
-            serializer=self.right_table.key_serializer,
-        )
+    def _check_left_placement(self, key: Any, partition: int) -> None:
+        # Responses reach a left row on the response topic's partition.
+        self._check_placement(
+            self.left_table, self.right_table, self.response_topic,
+            key, partition)
 
-    def _serialize_left_pk(self, left_pk: Any) -> bytes:
-        """Serialize a left primary key using the left table's key serializer."""
-        return self.app.serializers.dumps_key(
-            self.left_table.key_type,
-            left_pk,
-            serializer=self.left_table.key_serializer,
-        )
+    def _check_right_placement(self, key: Any, partition: int) -> None:
+        # Subscriptions reach a right row on the subscription topic's.
+        self._check_placement(
+            self.right_table, self.left_table, self.subscription_topic,
+            key, partition)
+
+    def _check_placement(self, table: CollectionT, other: CollectionT,
+                         topic: TopicT, key: Any, partition: int) -> None:
+        """Refuse to write a row where the join will not look for it.
+
+        The join finds a row by its key alone: on the partition the
+        producer's partitioner picks for the key's bytes. Anywhere else,
+        the row is never joined, so the write is refused and the app
+        stops; the record being processed is kept from being committed,
+        to be read again once the app is fixed.
+        """
+        expected = self._partition_of(topic, key)
+        if expected is None or expected == partition:
+            return
+        exc = KeyPlacementError(E_KEY_PLACEMENT.format(
+            table=table.name,
+            other=other.name,
+            key=key,
+            partition=partition,
+            expected=expected,
+            serialized=topic.prepare_key(key, None)[0],
+            serializer=table.key_serializer,
+        ))
+        event = current_event()
+        if event is not None:
+            # A reference nothing releases: the offset is never committed.
+            event.message.incref()
+        asyncio.ensure_future(self.crash(exc))
+        raise exc
+
+    def _partition_of(self, topic: TopicT, key: Any) -> Optional[int]:
+        """Partition the join's producer sends ``key`` to on ``topic``."""
+        key_bytes, _ = topic.prepare_key(key, None)
+        partitioner = getattr(self.app.producer, 'partitioner', None)
+        if key_bytes is None or partitioner is None:
+            return None
+        count = (self.app.consumer.topic_partitions(topic.get_topic_name())
+                 or topic.partitions
+                 or self.app.conf.topic_partitions)
+        partitions = list(range(count))
+        return partitioner(key_bytes, partitions, partitions)
 
     # --- Group 5: Left-Side Subscription Sender ---
 
@@ -247,6 +312,14 @@ class KeyJoinProcessor(Service, KeyJoinT):
                 SubscriptionInstruction.UNSUBSCRIBE_ONLY,
             )
 
+        if new_fk is None:
+            # No foreign key, nothing to subscribe to. The broker refuses a
+            # keyless record on these compacted topics, and with it the
+            # batch it shares.
+            if old_fk is not None:
+                del self.previous_fk_store[key]
+            return
+
         # Subscribe (or re-subscribe) to new FK
         self._send_subscription(
             new_fk, key, current_hash,
@@ -261,9 +334,8 @@ class KeyJoinProcessor(Service, KeyJoinT):
         hash_value: int,
         instruction: SubscriptionInstruction,
     ) -> None:
-        msg = { "left_pk": left_pk, "hash": hash_value, "instruction": instruction.value }
-        partition = self.app.producer.key_partition(current_event().message.topic, self._serialize_fk(fk)).partition
-        self.subscription_topic.send_soon(key=fk, value=msg, partition=partition)
+        msg = { "left_pk": _text(left_pk), "hash": hash_value, "instruction": instruction.value }
+        self.subscription_topic.send_soon(key=fk, value=msg)
 
     # --- Group 6: Right-Side Subscription Processor ---
 
@@ -272,7 +344,7 @@ class KeyJoinProcessor(Service, KeyJoinT):
     ) -> None:
         """Process a subscription message on the right side."""
         instruction = SubscriptionInstruction(message.get('instruction'))
-        composite_key = f"{fk}\x00{message.get('left_pk')}"
+        composite_key = f"{_text(fk)}\x00{message.get('left_pk')}"
 
         if instruction == SubscriptionInstruction.UNSUBSCRIBE_ONLY:
             self.subscription_store.pop(composite_key, None)
@@ -285,8 +357,7 @@ class KeyJoinProcessor(Service, KeyJoinT):
             right_value = self.right_table.get(fk)
             left_pk = message.get('left_pk')
             response = { "right_value": right_value, "hash": message.get('hash', 0) }
-            partition = self.app.producer.key_partition(current_event().message.topic, self._serialize_left_pk(left_pk)).partition
-            await self.response_topic.send(key=left_pk, value=response, partition=partition)
+            await self.response_topic.send(key=left_pk, value=response)
 
     # --- Group 7: Right-Table Update Propagation ---
 
@@ -297,13 +368,12 @@ class KeyJoinProcessor(Service, KeyJoinT):
         right_value = None if is_delete else value
         for left_pk, entry in self.prefix_scan(key):
             response = { "right_value": right_value, "hash": entry.get('hash', 0) }
-            partition = self.app.producer.key_partition(current_event().message.topic, self._serialize_left_pk(left_pk)).partition
-            self.response_topic.send_soon(key=left_pk, value=response, partition=partition)
+            self.response_topic.send_soon(key=left_pk, value=response)
 
     # --- Group 8: Left-Side Response Handler ---
 
     async def _process_response(
-        self, left_pk: Any, message: Any,
+        self, left_pk: Any, message: Any, event: EventT,
     ) -> None:
         """Process a response message on the left side."""
         left_value = self.left_table.get(left_pk)
@@ -323,8 +393,48 @@ class KeyJoinProcessor(Service, KeyJoinT):
             return
 
         joined = JoinedValue(left=left_value, right=message.get('right_value'))
-        if self._output_channel is not None:
-            await self._output_channel.send(value=joined)
+        await self._emit(left_pk, joined, event)
+
+    # --- Group 9: Output ---
+
+    async def _emit(self, key: Any, value: Any, response: EventT) -> None:
+        """Hand a result to every subscriber of the output channel.
+
+        The result's event carries the response's message, and each
+        subscriber holds a reference to it: the response is committed only
+        once every subscriber has acked the result, after processing it,
+        or with ``event.ack()`` when its stream does not ack. A result
+        dropped before then, by a rebalance or a stop, leaves the response
+        uncommitted, to be read and answered again.
+        """
+        channel = self._output_channel
+        subscribers = list(channel._subscribers) if channel is not None else []
+        if not subscribers:
+            return
+        message = response.message
+        result = self.app.create_event(key, value, None, message)
+        message.incref(len(subscribers))
+        for subscriber in subscribers:
+            await self._deliver(subscriber.queue, result)
+
+    async def _deliver(self, queue: asyncio.Queue, event: EventT) -> bool:
+        """Put ``event`` on a subscriber's queue; False if it is dropped.
+
+        A rebalance suspends the app's flow, then clears every channel's
+        queue and cancels the puts waiting on them: what is dropped is
+        never acked. A put waiting for the flow to resume, as the queue's
+        own ``put`` does, would hold the response being processed, which
+        the rebalance waits for, so a result is dropped instead.
+        """
+        if not self.app.flow_control.is_active():
+            return False
+        put = asyncio.ensure_future(asyncio.Queue.put(queue, event))
+        try:
+            await asyncio.wait({put})
+        except asyncio.CancelledError:
+            put.cancel()
+            raise
+        return not put.cancelled()
 
     # --- Callback Wrappers ---
 
@@ -379,4 +489,4 @@ class KeyJoinProcessor(Service, KeyJoinT):
         async for event in self.response_topic.stream().events():
             left_pk = event.key
             message = event.value
-            await self._process_response(left_pk, message)
+            await self._process_response(left_pk, message, event)
