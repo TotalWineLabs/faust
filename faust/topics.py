@@ -222,6 +222,8 @@ class Topic(SerializedChannel, TopicT):
             callback=callback,
             eager_partitioning=eager_partitioning,
         )
+        # Sent later from the buffer, where no record is being processed.
+        fut.during_processing = current_event() is not None
         self.app.producer.send_soon(fut)
         return fut
 
@@ -408,6 +410,9 @@ class Topic(SerializedChannel, TopicT):
             app.sensors.on_send_completed(producer, state, ret)
             return await self._finalize_message(fut, ret)
         else:
+            during_processing = getattr(fut, 'during_processing', None)
+            if during_processing is None:
+                during_processing = current_event() is not None
             fut2 = cast(asyncio.Future, await producer.send(
                 topic, key, value,
                 partition=partition,
@@ -419,6 +424,7 @@ class Topic(SerializedChannel, TopicT):
                 message=fut,
                 state=state,
                 producer=producer,
+                during_processing=during_processing,
             )
             fut2.add_done_callback(cast(Callable, callback))
             return fut2
@@ -435,12 +441,17 @@ class Topic(SerializedChannel, TopicT):
     def _on_published(self, fut: asyncio.Future,
                       message: FutureMessage,
                       producer: ProducerT,
-                      state: Any) -> None:
+                      state: Any,
+                      during_processing: bool = False) -> None:
         try:
             res: RecordMetadata = fut.result()
         except Exception as exc:
             message.set_exception(exc)
             self.app.sensors.on_send_error(producer, exc, state)
+            if during_processing:
+                # An output of records being processed, lost with nobody
+                # waiting for it: their offsets must not be committed.
+                producer.on_undelivered(exc)
         else:
             message.set_result(res)
             if message.message.callback:

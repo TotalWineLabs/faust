@@ -23,6 +23,7 @@ def app(event_loop, request):
         start=AsyncMock(),
         send=AsyncMock(),
         send_and_wait=AsyncMock(),
+        wait_delivered=AsyncMock(),
     )
     instance.finalize()
     set_current_span(None)
