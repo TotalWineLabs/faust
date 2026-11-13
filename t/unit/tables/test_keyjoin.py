@@ -71,6 +71,11 @@ def _subscription_calls(proc):
     return [c.kwargs for c in proc.subscription_topic.send_soon.call_args_list]
 
 
+def _answers(proc):
+    """Responses sent with send_soon: by the left side, or right changes."""
+    return [c.kwargs for c in proc.response_topic.send_soon.call_args_list]
+
+
 def _response_event(app, left_pk, message, offset=1):
     """A response as the response stream hands it over: one reference."""
     event = new_event(app, key=left_pk, value=message,
@@ -157,6 +162,8 @@ class test_left_table_change:
         [sent] = _subscription_calls(processor)
         assert sent['key'] == 'prod1'
         assert sent['value']['instruction'] == SUBSCRIBE_AND_RESPOND
+        # It had a foreign key: no match now retracts its result.
+        assert sent['value']['retract'] is True
 
     def test_foreign_key_change_unsubscribes_old_subscribes_new(
             self, processor):
@@ -169,9 +176,10 @@ class test_left_table_change:
         assert unsubscribe['value']['instruction'] == UNSUBSCRIBE_ONLY
         assert subscribe['key'] == 'prod2'
         assert subscribe['value']['instruction'] == SUBSCRIBE_AND_RESPOND
+        assert subscribe['value']['retract'] is True
         assert processor.previous_fk_store['order1'] == 'prod2'
 
-    def test_deletion_unsubscribes_and_forgets(self, processor):
+    def test_deletion_unsubscribes_forgets_and_retracts(self, processor):
         processor.previous_fk_store['order1'] = 'prod1'
         processor._on_left_table_change('order1', None, is_delete=True)
 
@@ -179,27 +187,66 @@ class test_left_table_change:
         assert sent['key'] == 'prod1'
         assert sent['value']['instruction'] == UNSUBSCRIBE_ONLY
         assert 'order1' not in processor.previous_fk_store
+        assert _answers(processor) == [{'key': 'order1', 'value': {
+            'right_value': None, 'hash': 0, 'retract': True}}]
 
     def test_deletion_of_unknown_record_sends_nothing(self, processor):
         processor._on_left_table_change('order1', None, is_delete=True)
         processor.subscription_topic.send_soon.assert_not_called()
+        assert _answers(processor) == []
 
     def test_missing_foreign_key_sends_nothing(self, processor):
         # A keyless record on the compacted subscription topic is refused
-        # by the broker, together with the batch it shares.
+        # by the broker, together with the batch it shares. An inner join
+        # has no result for the row, and had none.
         processor._on_left_table_change('order1', {'product_id': None})
 
         processor.subscription_topic.send_soon.assert_not_called()
         assert 'order1' not in processor.previous_fk_store
+        assert _answers(processor) == []
 
-    def test_foreign_key_removed_unsubscribes_and_forgets(self, processor):
+    def test_foreign_key_removed_unsubscribes_forgets_and_retracts(
+            self, processor):
+        value = {'product_id': None}
         processor.previous_fk_store['order1'] = 'prod1'
-        processor._on_left_table_change('order1', {'product_id': None})
+        processor._on_left_table_change('order1', value)
 
         [sent] = _subscription_calls(processor)
         assert sent['key'] == 'prod1'
         assert sent['value']['instruction'] == UNSUBSCRIBE_ONLY
         assert 'order1' not in processor.previous_fk_store
+        assert _answers(processor) == [{'key': 'order1', 'value': {
+            'right_value': None,
+            'hash': KeyJoinProcessor.compute_hash(value),
+            'retract': True}}]
+
+    def test_left_join_missing_foreign_key_answers_itself(self, processor):
+        processor.inner = False
+        value = {'product_id': None}
+        processor._on_left_table_change('order1', value)
+
+        processor.subscription_topic.send_soon.assert_not_called()
+        assert _answers(processor) == [{'key': 'order1', 'value': {
+            'right_value': None,
+            'hash': KeyJoinProcessor.compute_hash(value)}}]
+
+    def test_left_join_foreign_key_removed_answers_itself(self, processor):
+        processor.inner = False
+        processor.previous_fk_store['order1'] = 'prod1'
+        processor._on_left_table_change('order1', {'product_id': None})
+
+        [sent] = _subscription_calls(processor)
+        assert sent['value']['instruction'] == UNSUBSCRIBE_ONLY
+        [answer] = _answers(processor)
+        assert 'retract' not in answer['value']
+
+    def test_left_join_deletion_retracts_every_row(self, processor):
+        # Even one without a foreign key: its result was (left, None).
+        processor.inner = False
+        processor._on_left_table_change('order1', None, is_delete=True)
+
+        assert _answers(processor) == [{'key': 'order1', 'value': {
+            'right_value': None, 'hash': 0, 'retract': True}}]
 
     def test_foreign_key_restored_subscribes_again(self, processor):
         processor._on_left_table_change('order1', {'product_id': None})
@@ -354,6 +401,18 @@ class test_process_subscription:
         assert 'prod1\x00order1' in processor.subscription_store
         processor.response_topic.send.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_response_says_to_retract_as_asked(self, processor):
+        processor.right_table.get = Mock(return_value=None)
+        await processor._process_subscription('prod9', {
+            'left_pk': 'order1', 'hash': 7,
+            'instruction': SUBSCRIBE_AND_RESPOND, 'retract': True,
+        })
+
+        sent = processor.response_topic.send.call_args.kwargs
+        assert sent['value'] == {
+            'right_value': None, 'hash': 7, 'retract': True}
+
 
 class test_right_table_change:
 
@@ -385,6 +444,17 @@ class test_right_table_change:
         calls = processor.response_topic.send_soon.call_args_list
         assert len(calls) == 2
         assert all(c.kwargs['value']['right_value'] is None for c in calls)
+
+    def test_deletion_retracts_and_an_update_does_not(self, processor):
+        processor._on_right_table_change('prod1', None, is_delete=True)
+        processor._on_right_table_change('prod1', {'name': 'Back'})
+
+        deleted, updated = (
+            [c.kwargs['value'] for c in
+             processor.response_topic.send_soon.call_args_list][i:i + 2]
+            for i in (0, 2))
+        assert all(v['retract'] is True for v in deleted)
+        assert all('retract' not in v for v in updated)
 
 
 class test_process_response:
@@ -431,6 +501,148 @@ class test_process_response:
         await _respond(processor, 'order1', self._response(None))
         assert _results(processor) == [
             ('order1', JoinedValue(left=self.LEFT, right=None))]
+
+    @pytest.mark.asyncio
+    async def test_inner_join_retracts_when_asked(self, processor):
+        await _respond(
+            processor, 'order1', {**self._response(None), 'retract': True})
+        assert _results(processor) == [('order1', None)]
+
+    @pytest.mark.asyncio
+    async def test_left_join_answers_rather_than_retracts(self, processor):
+        # The row is there: its result has no right value.
+        processor.inner = False
+        await _respond(
+            processor, 'order1', {**self._response(None), 'retract': True})
+        assert _results(processor) == [
+            ('order1', JoinedValue(left=self.LEFT, right=None))]
+
+    @pytest.mark.asyncio
+    async def test_deleted_row_is_retracted(self, processor):
+        processor.left_table.get = Mock(return_value=None)
+        await _respond(processor, 'order1', {
+            'right_value': None, 'hash': 0, 'retract': True})
+        assert _results(processor) == [('order1', None)]
+
+    @pytest.mark.asyncio
+    async def test_retraction_of_a_recreated_row_is_stale(self, processor):
+        await _respond(processor, 'order1', {
+            'right_value': None, 'hash': 0, 'retract': True})
+        assert _results(processor) == []
+
+    @pytest.mark.asyncio
+    async def test_retraction_carries_the_response(self, processor):
+        response = await _respond(
+            processor, 'order1', {**self._response(None), 'retract': True})
+        [retraction] = _emitted(processor)
+
+        response.ack()
+        assert not response.message.acked
+        retraction.ack()
+        assert response.message.acked
+
+
+class _Wire:
+    """The join's topics: each message is processed in the order sent."""
+
+    def __init__(self, proc, lefts, rights):
+        self.proc, self.lefts, self.rights = proc, lefts, rights
+        proc.left_table.get = Mock(side_effect=lefts.get)
+        proc.right_table.get = Mock(side_effect=rights.get)
+        self.pending = []
+        proc._subscription_topic.send_soon = Mock(
+            side_effect=lambda **kw: self.pending.append(('subscribe', kw)))
+        proc._response_topic.send_soon = Mock(
+            side_effect=lambda **kw: self.pending.append(('respond', kw)))
+        proc._response_topic.send = AsyncMock(
+            side_effect=lambda **kw: self.pending.append(('respond', kw)))
+
+    async def left(self, key, value):
+        if value is None:
+            self.proc._on_left_key_del(key)
+            del self.lefts[key]
+        else:
+            self.lefts[key] = value
+            self.proc._on_left_key_set(key, value)
+        return await self._drain()
+
+    async def right(self, key, value):
+        if value is None:
+            self.proc._on_right_key_del(key)
+            del self.rights[key]
+        else:
+            self.rights[key] = value
+            self.proc._on_right_key_set(key, value)
+        return await self._drain()
+
+    async def _drain(self):
+        while self.pending:
+            kind, kw = self.pending.pop(0)
+            if kind == 'subscribe':
+                await self.proc._process_subscription(kw['key'], kw['value'])
+            else:
+                await _respond(self.proc, kw['key'], kw['value'])
+        return [(key, value if value is None else
+                 (value.left['id'], value.right and value.right['name']))
+                for key, value in _results(self.proc)]
+
+
+class test_join_results:
+    """What each join emits as its tables change."""
+
+    PEN = {'name': 'Pen'}
+    INK = {'name': 'Ink'}
+
+    @pytest.fixture()
+    def wire(self, processor):
+        return _Wire(processor, lefts={}, rights={})
+
+    def _order(self, id, product_id):
+        return {'id': id, 'product_id': product_id}
+
+    @pytest.mark.asyncio
+    async def test_left_join(self, wire):
+        wire.proc.inner = False
+        assert await wire.right('p1', self.PEN) == []
+        assert await wire.left('o1', self._order('o1', 'p1')) == [
+            ('o1', ('o1', 'Pen'))]
+        assert await wire.left('o2', self._order('o2', 'p9')) == [
+            ('o2', ('o2', None))]
+        assert await wire.left('o3', self._order('o3', None)) == [
+            ('o3', ('o3', None))]
+        assert await wire.left('o1', self._order('o1', None)) == [
+            ('o1', ('o1', None))]
+        assert await wire.right('p9', self.INK) == [('o2', ('o2', 'Ink'))]
+        assert await wire.left('o2', None) == [('o2', None)]
+        assert await wire.left('o3', None) == [('o3', None)]
+        assert await wire.right('p9', None) == []
+
+    @pytest.mark.asyncio
+    async def test_inner_join(self, wire):
+        assert await wire.right('p1', self.PEN) == []
+        assert await wire.left('o1', self._order('o1', 'p1')) == [
+            ('o1', ('o1', 'Pen'))]
+        assert await wire.left('o2', self._order('o2', 'p9')) == []
+        assert await wire.left('o3', self._order('o3', None)) == []
+        assert await wire.left('o1', self._order('o1', None)) == [
+            ('o1', None)]
+        assert await wire.right('p9', self.INK) == [('o2', ('o2', 'Ink'))]
+        assert await wire.right('p9', None) == [('o2', None)]
+        assert await wire.left('o2', self._order('o2', 'p1')) == [
+            ('o2', ('o2', 'Pen'))]
+        assert await wire.left('o2', None) == [('o2', None)]
+        assert await wire.left('o3', None) == []
+
+    @pytest.mark.asyncio
+    async def test_inner_join_retracts_on_a_missing_new_key(self, wire):
+        await wire.right('p1', self.PEN)
+        await wire.left('o1', self._order('o1', 'p1'))
+        assert await wire.left('o1', self._order('o1', 'p9')) == [
+            ('o1', None)]
+
+    @pytest.mark.asyncio
+    async def test_new_unmatched_row_is_not_retracted(self, wire):
+        assert await wire.left('o1', self._order('o1', 'p9')) == []
 
 
 class test_end_to_end:
