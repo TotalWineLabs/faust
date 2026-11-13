@@ -12,10 +12,20 @@ from faust.types.joins import (
     SubscriptionInstruction,
 )
 from faust.types.tables import CollectionT
-from faust import current_event
+from faust.types.events import EventT
 from faust.serializers import codecs
 
 __all__ = ['KeyJoinProcessor']
+
+
+def _text(key: Any) -> Any:
+    """A key as text.
+
+    A table with raw keys holds bytes, while the subscription message and
+    the subscription store's composite keys are text: str() would make
+    b'p1' into "b'p1'", a key that matches nothing.
+    """
+    return key.decode() if isinstance(key, bytes) else key
 
 
 class KeyJoinProcessor(Service, KeyJoinT):
@@ -180,7 +190,7 @@ class KeyJoinProcessor(Service, KeyJoinT):
         composite keys ``"{fk}\\x00{left_pk}"`` matching the FK prefix
         and yields ``(left_pk, entry)`` pairs.
         """
-        prefix = f"{fk}\x00"
+        prefix = f"{_text(fk)}\x00"
         for key, value in self.subscription_store.prefix_scan(prefix):
             left_pk = key[len(prefix):]
             yield (left_pk, value)
@@ -201,30 +211,17 @@ class KeyJoinProcessor(Service, KeyJoinT):
             data = codecs.dumps('json', value)
         return mmh3.hash128(data)
 
-    # --- Helpers: Key Serialization ---
-
-    def _serialize_fk(self, fk: Any) -> bytes:
-        """Serialize a foreign key using the right table's key serializer."""
-        return self.app.serializers.dumps_key(
-            self.right_table.key_type,
-            fk,
-            serializer=self.right_table.key_serializer,
-        )
-
-    def _serialize_left_pk(self, left_pk: Any) -> bytes:
-        """Serialize a left primary key using the left table's key serializer."""
-        return self.app.serializers.dumps_key(
-            self.left_table.key_type,
-            left_pk,
-            serializer=self.left_table.key_serializer,
-        )
-
     # --- Group 5: Left-Side Subscription Sender ---
 
     def _on_left_table_change(
         self, key: Any, value: Any, *, is_delete: bool = False,
     ) -> None:
-        """Called when the left table is updated."""
+        """Called when the left table is updated.
+
+        A row's earlier result is replaced, or retracted when the row has
+        none any more: a deleted row, or, in an inner join, a row with a
+        foreign key that no longer matches.
+        """
         old_fk = self.previous_fk_store.get(key)
 
         if is_delete:
@@ -235,6 +232,9 @@ class KeyJoinProcessor(Service, KeyJoinT):
                     SubscriptionInstruction.UNSUBSCRIBE_ONLY,
                 )
                 del self.previous_fk_store[key]
+            if old_fk is not None or not self.inner:
+                # Every row of a left join has a result.
+                self._answer(key, self.compute_hash(None), retract=True)
             return
 
         new_fk = self.extractor(value)
@@ -247,10 +247,23 @@ class KeyJoinProcessor(Service, KeyJoinT):
                 SubscriptionInstruction.UNSUBSCRIBE_ONLY,
             )
 
-        # Subscribe (or re-subscribe) to new FK
+        if new_fk is None:
+            # No foreign key, nothing to subscribe to. The broker refuses a
+            # keyless record on these compacted topics, and with it the
+            # batch it shares. The row answers itself instead: a left
+            # join's result has no right value, an inner join's is gone.
+            if old_fk is not None:
+                del self.previous_fk_store[key]
+            if old_fk is not None or not self.inner:
+                self._answer(key, current_hash, retract=self.inner)
+            return
+
+        # Subscribe (or re-subscribe) to new FK. A row that had a foreign
+        # key may have a result to retract if this one does not match.
         self._send_subscription(
             new_fk, key, current_hash,
             SubscriptionInstruction.SUBSCRIBE_AND_RESPOND,
+            retract=old_fk is not None,
         )
         self.previous_fk_store[key] = new_fk
 
@@ -260,10 +273,24 @@ class KeyJoinProcessor(Service, KeyJoinT):
         left_pk: Any,
         hash_value: int,
         instruction: SubscriptionInstruction,
+        *,
+        retract: bool = False,
     ) -> None:
-        msg = { "left_pk": left_pk, "hash": hash_value, "instruction": instruction.value }
-        partition = self.app.producer.key_partition(current_event().message.topic, self._serialize_fk(fk)).partition
-        self.subscription_topic.send_soon(key=fk, value=msg, partition=partition)
+        msg = { "left_pk": _text(left_pk), "hash": hash_value, "instruction": instruction.value }
+        if retract:
+            msg["retract"] = True
+        self.subscription_topic.send_soon(key=fk, value=msg)
+
+    def _answer(self, left_pk: Any, hash_value: int, *, retract: bool) -> None:
+        """Respond to a left row that has no right row to ask.
+
+        Sent to the response topic like the right side's responses, so it
+        is ordered with them and judged stale the same way.
+        """
+        response = {"right_value": None, "hash": hash_value}
+        if retract:
+            response["retract"] = True
+        self.response_topic.send_soon(key=left_pk, value=response)
 
     # --- Group 6: Right-Side Subscription Processor ---
 
@@ -272,7 +299,7 @@ class KeyJoinProcessor(Service, KeyJoinT):
     ) -> None:
         """Process a subscription message on the right side."""
         instruction = SubscriptionInstruction(message.get('instruction'))
-        composite_key = f"{fk}\x00{message.get('left_pk')}"
+        composite_key = f"{_text(fk)}\x00{message.get('left_pk')}"
 
         if instruction == SubscriptionInstruction.UNSUBSCRIBE_ONLY:
             self.subscription_store.pop(composite_key, None)
@@ -285,8 +312,9 @@ class KeyJoinProcessor(Service, KeyJoinT):
             right_value = self.right_table.get(fk)
             left_pk = message.get('left_pk')
             response = { "right_value": right_value, "hash": message.get('hash', 0) }
-            partition = self.app.producer.key_partition(current_event().message.topic, self._serialize_left_pk(left_pk)).partition
-            await self.response_topic.send(key=left_pk, value=response, partition=partition)
+            if message.get('retract'):
+                response["retract"] = True
+            await self.response_topic.send(key=left_pk, value=response)
 
     # --- Group 7: Right-Table Update Propagation ---
 
@@ -297,34 +325,80 @@ class KeyJoinProcessor(Service, KeyJoinT):
         right_value = None if is_delete else value
         for left_pk, entry in self.prefix_scan(key):
             response = { "right_value": right_value, "hash": entry.get('hash', 0) }
-            partition = self.app.producer.key_partition(current_event().message.topic, self._serialize_left_pk(left_pk)).partition
-            self.response_topic.send_soon(key=left_pk, value=response, partition=partition)
+            if is_delete:
+                # An inner join's results with this row are gone.
+                response["retract"] = True
+            self.response_topic.send_soon(key=left_pk, value=response)
 
     # --- Group 8: Left-Side Response Handler ---
 
     async def _process_response(
-        self, left_pk: Any, message: Any,
+        self, left_pk: Any, message: Any, event: EventT,
     ) -> None:
-        """Process a response message on the left side."""
+        """Process a response message on the left side.
+
+        A response for the row as it is now emits the row's result: the
+        joined value, or ``None`` when the response retracts it.
+        """
         left_value = self.left_table.get(left_pk)
 
-        # Left record deleted — discard
-        if left_value is None:
-            return
-
-        # Check hash for staleness
+        # Check hash for staleness: a deleted row's hash is that of None,
+        # which only the row's own retraction carries.
         current_hash = self.compute_hash(left_value)
         if current_hash != message.get('hash'):
             # Stale response — discard
             return
 
-        # Inner join: skip if right side is None
-        if self.inner and message.get('right_value') is None:
+        right_value = message.get('right_value')
+        if left_value is None or (self.inner and right_value is None):
+            # No result: the row is gone, or an inner join has no match.
+            if message.get('retract'):
+                await self._emit(left_pk, None, event)
             return
 
-        joined = JoinedValue(left=left_value, right=message.get('right_value'))
-        if self._output_channel is not None:
-            await self._output_channel.send(value=joined)
+        joined = JoinedValue(left=left_value, right=right_value)
+        await self._emit(left_pk, joined, event)
+
+    # --- Group 9: Output ---
+
+    async def _emit(self, key: Any, value: Any, response: EventT) -> None:
+        """Hand a result to every subscriber of the output channel.
+
+        The result's event carries the response's message, and each
+        subscriber holds a reference to it: the response is committed only
+        once every subscriber has acked the result, after processing it,
+        or with ``event.ack()`` when its stream does not ack. A result
+        dropped before then, by a rebalance or a stop, leaves the response
+        uncommitted, to be read and answered again.
+        """
+        channel = self._output_channel
+        subscribers = list(channel._subscribers) if channel is not None else []
+        if not subscribers:
+            return
+        message = response.message
+        result = self.app.create_event(key, value, None, message)
+        message.incref(len(subscribers))
+        for subscriber in subscribers:
+            await self._deliver(subscriber.queue, result)
+
+    async def _deliver(self, queue: asyncio.Queue, event: EventT) -> bool:
+        """Put ``event`` on a subscriber's queue; False if it is dropped.
+
+        A rebalance suspends the app's flow, then clears every channel's
+        queue and cancels the puts waiting on them: what is dropped is
+        never acked. A put waiting for the flow to resume, as the queue's
+        own ``put`` does, would hold the response being processed, which
+        the rebalance waits for, so a result is dropped instead.
+        """
+        if not self.app.flow_control.is_active():
+            return False
+        put = asyncio.ensure_future(asyncio.Queue.put(queue, event))
+        try:
+            await asyncio.wait({put})
+        except asyncio.CancelledError:
+            put.cancel()
+            raise
+        return not put.cancelled()
 
     # --- Callback Wrappers ---
 
@@ -379,4 +453,4 @@ class KeyJoinProcessor(Service, KeyJoinT):
         async for event in self.response_topic.stream().events():
             left_pk = event.key
             message = event.value
-            await self._process_response(left_pk, message)
+            await self._process_response(left_pk, message, event)
