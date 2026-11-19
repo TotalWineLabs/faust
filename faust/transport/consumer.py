@@ -220,6 +220,14 @@ class TransactionManager(Service, TransactionManagerT):
         """Wait for producer to transmit all pending messages."""
         await self.producer.flush()
 
+    def on_undelivered(self, exc: BaseException) -> None:
+        """Record a message sent while processing records that was lost."""
+        self.producer.on_undelivered(exc)
+
+    async def wait_delivered(self) -> None:
+        """Wait until every message sent so far is delivered."""
+        await self.producer.wait_delivered()
+
     async def on_partitions_revoked(self, revoked: Set[TP]) -> None:
         """Call when the cluster is rebalancing and partitions are revoked."""
         await traced_from_parent_span()(self.flush)()
@@ -980,6 +988,11 @@ class Consumer(Service, ConsumerT):
             try:
                 # send all messages attached to the new offset
                 await self._handle_attached(commit_offsets)
+                # and wait for every message sent so far, so that what the
+                # records up to the new offsets produced is in Kafka before
+                # they are committed: a crash then reprocesses them instead
+                # of losing their output.
+                await self.app.producer.wait_delivered()
             except ProducerSendError as exc:
                 await self.crash(exc)
             else:

@@ -162,6 +162,28 @@ class ProducerTests:
     def test_supports_headers(self, *, producer):
         assert not producer.supports_headers()
 
+    @pytest.mark.asyncio
+    async def test_wait_delivered_flushes(self, *, producer):
+        producer.flush = AsyncMock(name='flush')
+        await producer.wait_delivered()
+        producer.flush.coro.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_wait_delivered_raises_once_a_message_is_lost(
+            self, *, producer):
+        from faust.exceptions import ProducerSendError
+        producer.flush = AsyncMock(name='flush')
+        lost = KeyError('lost')
+        producer.on_undelivered(lost)
+        producer.on_undelivered(KeyError('later'))
+
+        with pytest.raises(ProducerSendError) as raised:
+            await producer.wait_delivered()
+        assert raised.value.__cause__ is lost
+        # Every later commit is refused too.
+        with pytest.raises(ProducerSendError):
+            await producer.wait_delivered()
+
 
 class test_Producer(ProducerTests):
 
